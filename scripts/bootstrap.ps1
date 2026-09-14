@@ -16,14 +16,15 @@ function Write-OK($msg)     { Write-Host "[ OK ] $msg" -ForegroundColor Green }
 function Write-Fail($msg)   { Write-Host "[FAIL] $msg" -ForegroundColor Red }
 function Write-Warn($msg)   { Write-Host "[WARN] $msg" -ForegroundColor Yellow }
 
-# ---------- 1. 检查管理员权限 ----------
+# ---------- 1. 管理员权限(缺失则自动提权重启) ----------
 Write-Step "检查管理员权限..."
-if (-not (New-Object Security.Principal.WindowsPrincipal([Security.Principal.WindowsIdentity]::GetCurrent())
-    ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-  Write-Fail "需要以管理员身份运行 PowerShell"
-  Write-Host "请右键 PowerShell → 以管理员身份运行,然后重跑此脚本" -ForegroundColor Yellow
-  pause
-  exit 1
+$isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()
+  ).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+
+if (-not $isAdmin) {
+  Write-Warn "当前非管理员权限,正在弹出 UAC 请求提权..."
+  Start-Process powershell -Verb RunAs -ArgumentList "-NoExit -ExecutionPolicy Bypass -File `"$PSCommandPath`""
+  exit 0
 }
 Write-OK "管理员权限"
 
