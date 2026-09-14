@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   RAG Knowledge QA - 一键引导脚本
 .DESCRIPTION

@@ -1,4 +1,4 @@
-<#
+﻿<#
 .SYNOPSIS
   RAG 基础环境健康检查(Windows PowerShell 版)
 #>
