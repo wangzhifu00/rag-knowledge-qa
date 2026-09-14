@@ -28,52 +28,68 @@ rag-knowledge-qa/
 └── README.md
 ```
 
-## 快速开始
+## 快速开始(Windows)
 
-### 0. 前置条件
+### 0. 一键引导(几乎全自动)
 
-- **Docker Desktop for Windows** (含 WSL2 后端): <https://www.docker.com/products/docker-desktop/>
-- **Git**: 已安装
-- 至少一个 LLM API Key (DeepSeek 推荐,中文场景性价比最高)
-
-### 1. 克隆并配置环境
-
-```bash
-git clone <your-repo-url>
-cd rag-knowledge-qa
-
-# 复制环境变量模板
-cp .env.example .env       # Git Bash / WSL
-# PowerShell: Copy-Item .env.example .env
-
-# 编辑 .env,填入至少一个 LLM API Key
-notepad .env               # Windows
+```powershell
+# 在项目根目录,右键 PowerShell 以管理员身份运行
+cd D:\WorkBuddy_Workspace\2026-09-14-21-55-49\rag-knowledge-qa
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
 ```
 
-### 2. 启动基础环境
+它会自动:
+1. 检测管理员权限
+2. 没装 Docker 就用 winget 装 Docker Desktop
+3. 没建 `.env` 就从模板创建并提示你填 API Key
+4. `docker compose pull` + `up -d`
+6. 跑健康检查
 
-```bash
+### 1. 手动路径
+
+如果你想自己控制每一步:
+
+#### 1.1 装 Docker Desktop
+
+> Docker Desktop 是唯一需要手动装的组件(沙箱限制: GUI 安装包 + 需管理员)。
+
+```powershell
+# 方式 A: winget 一行(推荐)
+winget install --id Docker.DockerDesktop -e --source winget
+
+# 方式 B: 官网下载
+# https://www.docker.com/products/docker-desktop/
+# 安装时勾选 "Use WSL 2 instead of Hyper-V"(Windows 11 默认)
+```
+
+装完**重启电脑**,确认 Docker Desktop 启动并跑出鲸鱼图标,然后 `docker --version` 验证。
+
+#### 1.2 配环境变量
+
+```powershell
+Copy-Item .env.example .env
+notepad .env    # 填入至少一个 LLM API Key
+```
+
+#### 1.3 启动
+
+```powershell
+# PowerShell 版(本机)
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
+
+# 或直接
+docker compose up -d
+
+# Git Bash / WSL
 bash scripts/start.sh
 ```
 
-或手动:
-```bash
-docker compose up -d
-```
+#### 1.4 验证
 
-### 3. 验证服务
-
-```bash
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts\verify.ps1
+# 或
 bash scripts/verify.sh
-```
-
-预期输出:
-```
-[OK] PostgreSQL    : localhost:5432
-[OK] Redis         : localhost:6379
-[OK] Qdrant HTTP   : localhost:6333
-[OK] Qdrant gRPC   : localhost:6334
-[OK] Adminer       : http://localhost:8080
 ```
 
 ### 4. 访问管理界面
