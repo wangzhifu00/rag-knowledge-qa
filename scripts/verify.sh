@@ -33,7 +33,7 @@ check "Redis (localhost:6379)" \
 
 # ---------- Qdrant HTTP ----------
 check "Qdrant REST (http://localhost:6333/healthz)" \
-  "curl -fsS http://localhost:6333/healthz | grep -q ok"
+  "curl -fsS -o /dev/null http://localhost:6333/healthz"
 
 # ---------- Qdrant gRPC 端口监听 ----------
 check "Qdrant gRPC (localhost:6334)" \

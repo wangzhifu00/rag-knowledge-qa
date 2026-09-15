@@ -35,7 +35,7 @@ Test-Service "Redis (localhost:6379)" {
 Test-Service "Qdrant REST (http://localhost:6333/healthz)" {
   try {
     $resp = Invoke-WebRequest "http://localhost:6333/healthz" -UseBasicParsing -TimeoutSec 5
-    $resp.Content -match "ok"
+    $resp.StatusCode -eq 200
   } catch { $false }
 }
 
