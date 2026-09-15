@@ -1,5 +1,3 @@
-version: "3.9"
-
 # ============================================================
 # RAG Knowledge QA - 基础环境编排
 # 组件: PostgreSQL 16 + Redis 7 + Qdrant (向量库) + Adminer (DB 可视化)

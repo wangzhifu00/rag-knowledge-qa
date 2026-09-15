@@ -62,16 +62,34 @@ if (-not $dockerInstalled) {
   exit 1
 }
 
-# ---------- 3. 检查 Docker daemon ----------
+# ---------- 3. 检查 / 自动启动 Docker daemon ----------
 Write-Step "检查 Docker daemon..."
-try {
-  docker ps | Out-Null
-  Write-OK "Docker daemon 运行中"
-} catch {
-  Write-Fail "Docker daemon 未运行。请启动 Docker Desktop,然后重跑本脚本"
+
+function Test-DockerDaemon {
+  docker ps 2>&1 | Out-Null
+  return ($LASTEXITCODE -eq 0)
+}
+
+if (-not (Test-DockerDaemon)) {
+  $dockerExe = "$env:ProgramFiles\Docker\Docker\Docker Desktop.exe"
+  if (Test-Path $dockerExe) {
+    Write-Warn "Docker daemon 未运行，正在启动 Docker Desktop..."
+    Start-Process $dockerExe
+    $elapsed = 0
+    while ($elapsed -lt 90 -and -not (Test-DockerDaemon)) {
+      Start-Sleep -Seconds 3
+      $elapsed += 3
+      Write-Host "  等待 Docker daemon 就绪... ($elapsed 秒)"
+    }
+  }
+}
+
+if (-not (Test-DockerDaemon)) {
+  Write-Fail "Docker daemon 未运行。请手动启动 Docker Desktop，然后重跑本脚本"
   pause
   exit 1
 }
+Write-OK "Docker daemon 运行中"
 
 # ---------- 4. 检查 .env ----------
 Set-Location $ProjectRoot
@@ -89,9 +107,18 @@ if (-not (Test-Path ".env")) {
 # ---------- 5. 拉镜像 + 启动 ----------
 Write-Step "拉取 Docker 镜像(Postgres + Redis + Qdrant)..."
 docker compose pull
+if ($LASTEXITCODE -ne 0) {
+  Write-Fail "镜像拉取失败，可能是网络问题。请为 Docker Desktop 配置镜像加速器后重跑脚本"
+  Write-Host "参考: 设置 → Docker Engine → registry-mirrors，添加国内镜像地址" -ForegroundColor Yellow
+  exit 1
+}
 
 Write-Step "启动所有服务..."
 docker compose up -d
+if ($LASTEXITCODE -ne 0) {
+  Write-Fail "docker compose up 启动失败"
+  exit 1
+}
 
 Write-Step "等待服务就绪(10 秒)..."
 Start-Sleep -Seconds 10
@@ -99,6 +126,12 @@ Start-Sleep -Seconds 10
 # ---------- 6. 健康检查 ----------
 Write-Step "运行健康检查..."
 & "$PSScriptRoot\verify.ps1"
+$verifyExit = $LASTEXITCODE
+
+if ($verifyExit -ne 0) {
+  Write-Fail "健康检查未全部通过，请根据上方 FAIL 项排查"
+  exit 1
+}
 
 Write-Host "`n============================================="
 Write-OK "RAG 基础环境已就绪!"
