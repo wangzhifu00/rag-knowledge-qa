@@ -1,0 +1,11 @@
+# RAG 知识问答 - Python 依赖
+# 安装: pip install -r requirements.txt
+# 说明: fastembed 是 Qdrant 团队推出的轻量嵌入库,比 sentence-transformers 小很多且无需 torch
+
+python-dotenv>=1.0.0          # 读 .env 配置
+qdrant-client>=1.10.0        # 向量库官方客户端 (已包含 fastembed 文本嵌入支持)
+fastembed>=0.3.0             # BAAI/bge-small-zh-v1.5 嵌入(ONNX,无 torch 依赖)
+openai>=1.50.0               # DeepSeek API 兼容 OpenAI 协议
+psycopg[binary]>=3.2.0       # PostgreSQL 异步客户端,存原文/元数据
+redis>=5.0.0                 # 缓存(预留)
+pypdf>=5.0.0                 # PDF 加载(可选,后续用)
