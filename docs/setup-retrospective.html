@@ -1,0 +1,740 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>RAG 知识问答项目 · 环境搭建全记录</title>
+<style>
+  :root{
+    --bg:#f6f7f9;
+    --panel:#ffffff;
+    --panel-2:#fafbfc;
+    --ink:#1a1d21;
+    --ink-2:#4a5158;
+    --ink-3:#7a838c;
+    --line:#e3e6ea;
+    --line-2:#eef1f4;
+    --blue:#2f6feb;
+    --blue-bg:#eef4ff;
+    --green:#12894f;
+    --green-bg:#e9f8f0;
+    --amber:#9a6300;
+    --amber-bg:#fff6e3;
+    --red:#c2321f;
+    --red-bg:#fdeeeb;
+    --purple:#7048c6;
+    --purple-bg:#f2edfd;
+    --mono:"SFMono-Regular",Consolas,"Liberation Mono",Menlo,monospace;
+  }
+  *{box-sizing:border-box;}
+  body{
+    margin:0;
+    background:var(--bg);
+    color:var(--ink);
+    font-family:-apple-system,BlinkMacSystemFont,"Segoe UI","PingFang SC","Hiragino Sans GB","Microsoft YaHei",sans-serif;
+    line-height:1.75;
+    font-size:15px;
+    -webkit-font-smoothing:antialiased;
+  }
+  .wrap{max-width:960px;margin:0 auto;padding:40px 24px 100px;}
+
+  /* ---------- header ---------- */
+  header.hero{
+    background:linear-gradient(135deg,#1f3f7a 0%,#2f6feb 100%);
+    color:#fff;
+    border-radius:16px;
+    padding:36px 34px;
+    margin-bottom:32px;
+    box-shadow:0 8px 28px rgba(47,111,235,.18);
+  }
+  header.hero .kicker{
+    font-size:12.5px;letter-spacing:.16em;text-transform:uppercase;
+    opacity:.82;font-weight:600;margin-bottom:12px;
+  }
+  header.hero h1{margin:0 0 14px;font-size:29px;line-height:1.35;font-weight:700;letter-spacing:-.01em;}
+  header.hero p{margin:0;opacity:.92;font-size:14.5px;max-width:720px;}
+  header.hero .meta{
+    margin-top:22px;padding-top:18px;border-top:1px solid rgba(255,255,255,.22);
+    display:flex;flex-wrap:wrap;gap:10px 26px;font-size:13px;opacity:.9;
+  }
+
+  /* ---------- section ---------- */
+  section{margin-bottom:44px;}
+  h2{
+    font-size:21px;margin:0 0 6px;font-weight:700;letter-spacing:-.01em;
+    display:flex;align-items:center;gap:11px;
+  }
+  h2 .num{
+    display:inline-flex;align-items:center;justify-content:center;
+    width:29px;height:29px;border-radius:9px;background:var(--blue);color:#fff;
+    font-size:14px;font-weight:700;flex:0 0 auto;
+  }
+  h2 + .sub{color:var(--ink-3);font-size:13.5px;margin:0 0 20px 40px;}
+  h3{font-size:16.5px;margin:26px 0 10px;font-weight:700;}
+
+  /* ---------- panel ---------- */
+  .panel{
+    background:var(--panel);border:1px solid var(--line);border-radius:13px;
+    padding:22px 24px;margin-bottom:16px;
+  }
+  .panel.tight{padding:16px 18px;}
+
+  /* ---------- table ---------- */
+  table{width:100%;border-collapse:collapse;font-size:13.6px;margin:6px 0 4px;}
+  th{
+    text-align:left;padding:9px 12px;background:var(--panel-2);color:var(--ink-2);
+    font-weight:600;font-size:12.6px;letter-spacing:.02em;border-bottom:1px solid var(--line);
+  }
+  td{padding:10px 12px;border-bottom:1px solid var(--line-2);vertical-align:top;}
+  tr:last-child td{border-bottom:none;}
+  td code,th code{font-size:12.6px;}
+
+  code{
+    font-family:var(--mono);font-size:12.9px;background:#f1f3f6;
+    padding:2px 6px;border-radius:5px;color:#2b3a4a;
+  }
+  pre{
+    background:#1e2430;color:#e6ebf2;border-radius:10px;padding:14px 16px;
+    overflow-x:auto;font-family:var(--mono);font-size:12.8px;line-height:1.65;margin:10px 0;
+  }
+  pre code{background:none;padding:0;color:inherit;font-size:12.8px;}
+  pre .c{color:#8b98a8;}
+  pre .g{color:#7ddc9e;}
+  pre .r{color:#f0958a;}
+
+  /* ---------- badges ---------- */
+  .badge{
+    display:inline-block;padding:2px 9px;border-radius:20px;font-size:11.8px;
+    font-weight:600;white-space:nowrap;line-height:1.7;
+  }
+  .b-green{background:var(--green-bg);color:var(--green);}
+  .b-blue{background:var(--blue-bg);color:var(--blue);}
+  .b-amber{background:var(--amber-bg);color:var(--amber);}
+  .b-red{background:var(--red-bg);color:var(--red);}
+  .b-purple{background:var(--purple-bg);color:var(--purple);}
+
+  /* ---------- status cards ---------- */
+  .cards{display:grid;grid-template-columns:repeat(auto-fit,minmax(210px,1fr));gap:13px;}
+  .card{
+    background:var(--panel);border:1px solid var(--line);border-radius:12px;
+    padding:16px 17px;border-top:3px solid var(--green);
+  }
+  .card h4{margin:0 0 6px;font-size:14.5px;font-weight:700;}
+  .card p{margin:0;font-size:13px;color:var(--ink-3);line-height:1.65;}
+
+  /* ---------- timeline ---------- */
+  .tl{position:relative;padding-left:30px;margin-top:10px;}
+  .tl::before{
+    content:"";position:absolute;left:8px;top:8px;bottom:8px;width:2px;
+    background:linear-gradient(180deg,var(--blue),#c9d6ee);
+    border-radius:2px;
+  }
+  .tl-item{position:relative;margin-bottom:22px;}
+  .tl-item::before{
+    content:"";position:absolute;left:-29px;top:7px;width:12px;height:12px;
+    border-radius:50%;background:#fff;border:3px solid var(--blue);
+  }
+  .tl-item.done::before{border-color:var(--green);}
+  .tl-time{font-family:var(--mono);font-size:12.2px;color:var(--ink-3);margin-bottom:2px;}
+  .tl-title{font-weight:700;font-size:14.5px;margin-bottom:3px;}
+  .tl-desc{font-size:13.3px;color:var(--ink-2);}
+
+  /* ---------- problem card ---------- */
+  .prob{
+    background:var(--panel);border:1px solid var(--line);border-left:4px solid var(--red);
+    border-radius:11px;padding:17px 20px;margin-bottom:14px;
+  }
+  .prob.warn{border-left-color:#e8a72c;}
+  .prob.info{border-left-color:var(--blue);}
+  .prob.good{border-left-color:var(--green);}
+  .prob-head{display:flex;align-items:flex-start;gap:10px;margin-bottom:9px;flex-wrap:wrap;}
+  .prob-head h4{margin:0;font-size:15.2px;font-weight:700;flex:1 1 auto;min-width:200px;}
+  .prob-id{
+    font-family:var(--mono);font-size:11.5px;font-weight:700;color:#fff;
+    background:var(--red);padding:1px 7px;border-radius:5px;flex:0 0 auto;margin-top:3px;
+  }
+  .prob.warn .prob-id{background:#e8a72c;}
+  .prob.info .prob-id{background:var(--blue);}
+  .prob.good .prob-id{background:var(--green);}
+  .row{display:flex;gap:10px;font-size:13.5px;margin-top:7px;}
+  .row .lbl{
+    flex:0 0 74px;font-weight:700;color:var(--ink-3);font-size:12.6px;
+    padding-top:1px;letter-spacing:.02em;
+  }
+  .row .val{flex:1 1 auto;color:var(--ink-2);min-width:0;}
+  .row .val strong{color:var(--ink);}
+
+  /* ---------- callout ---------- */
+  .note{
+    background:var(--blue-bg);border:1px solid #cfdffb;border-radius:10px;
+    padding:14px 17px;font-size:13.5px;color:#1f3f7a;margin:14px 0;
+  }
+  .note.warn{background:var(--amber-bg);border-color:#f2ddb0;color:#7a4f00;}
+  .note.term{background:var(--purple-bg);border-color:#ddd0f7;color:#4c2f96;}
+  .note b{font-weight:700;}
+
+  /* ---------- glossary ---------- */
+  .gloss{display:grid;gap:11px;}
+  .gl{background:var(--panel);border:1px solid var(--line);border-radius:11px;padding:14px 17px;}
+  .gl .term{font-weight:700;font-size:14.2px;color:var(--purple);margin-bottom:3px;}
+  .gl .pro{font-size:13.2px;color:var(--ink-2);margin-bottom:4px;}
+  .gl .plain{font-size:13.2px;color:var(--ink-3);font-style:italic;}
+
+  /* ---------- arch diagram ---------- */
+  .arch{background:var(--panel);border:1px solid var(--line);border-radius:13px;padding:20px;overflow-x:auto;}
+
+  /* ---------- footer ---------- */
+  footer{
+    margin-top:52px;padding-top:20px;border-top:1px solid var(--line);
+    font-size:12.6px;color:var(--ink-3);text-align:center;
+  }
+
+  @media (max-width:640px){
+    .wrap{padding:24px 15px 70px;}
+    header.hero{padding:26px 22px;}
+    header.hero h1{font-size:22px;}
+    h2 + .sub{margin-left:0;}
+    .row{flex-direction:column;gap:2px;}
+    .row .lbl{flex:none;}
+    table{font-size:12.6px;}
+    th,td{padding:8px 9px;}
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <div class="kicker">项目复盘 · Setup Retrospective</div>
+  <h1>RAG 知识问答项目<br>环境搭建全记录</h1>
+  <p>从"零环境"到"可运行的 RAG 基础环境 + 云端代码仓库"的完整过程：做了什么、踩了哪些坑、每个坑的根因和解法。既保留专业术语，也用大白话解释。</p>
+  <div class="meta">
+    <span>📅 2026-09-14 21:55 → 09-15 10:40</span>
+    <span>📦 项目：rag-knowledge-qa</span>
+    <span>🔧 6 次代码提交</span>
+    <span>🐳 4 个容器全部运行中</span>
+  </div>
+</header>
+
+<!-- ================= 1. 总览 ================= -->
+<section>
+  <h2><span class="num">1</span>最终成果：三件事全部达成</h2>
+  <p class="sub">最初提出的三个目标，现在的真实状态。</p>
+
+  <div class="cards">
+    <div class="card">
+      <h4>① 安装基础组件 <span class="badge b-green">完成</span></h4>
+      <p>Docker Desktop + PostgreSQL 16 + Redis 7 + Qdrant 1.12.4，全部以容器方式运行，健康检查通过。</p>
+    </div>
+    <div class="card">
+      <h4>② 准备 API Key <span class="badge b-green">完成</span></h4>
+      <p><code>.env</code> 已生成并配置，内含 DeepSeek / OpenAI / 通义千问 / 智谱 GLM 四家预留位，该文件不入库。</p>
+    </div>
+    <div class="card">
+      <h4>③ 新建 GitHub 仓库 <span class="badge b-green">完成</span></h4>
+      <p>rag-knowledge-qa 已推送成功，本地与云端分支完全同步。</p>
+    </div>
+  </div>
+
+  <h3>运行中的服务（实测）</h3>
+  <div class="panel tight">
+    <table>
+      <thead><tr><th>容器名</th><th>镜像</th><th>端口</th><th>状态</th></tr></thead>
+      <tbody>
+        <tr><td><code>rag-postgres</code></td><td>postgres:16-alpine</td><td>5432</td><td><span class="badge b-green">Up · healthy</span></td></tr>
+        <tr><td><code>rag-redis</code></td><td>redis:7-alpine</td><td>6379</td><td><span class="badge b-green">Up · healthy</span></td></tr>
+        <tr><td><code>rag-qdrant</code></td><td>qdrant/qdrant:v1.12.4</td><td>6333 / 6334</td><td><span class="badge b-green">Up · healthy</span></td></tr>
+        <tr><td><code>rag-adminer</code></td><td>adminer:latest</td><td>8080</td><td><span class="badge b-green">Up</span></td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <h3>代码仓库与文件清单</h3>
+  <div class="panel tight">
+    <p style="margin:0 0 10px;font-size:13.4px;color:var(--ink-2);">
+      远程仓库：<a href="https://github.com/wangzhifu00/rag-knowledge-qa" style="color:var(--blue);">https://github.com/wangzhifu00/rag-knowledge-qa</a>
+    </p>
+    <table>
+      <thead><tr><th>路径</th><th>作用</th></tr></thead>
+      <tbody>
+        <tr><td><code>docker-compose.yml</code></td><td>四个服务的编排定义（镜像、端口、数据卷、健康检查）</td></tr>
+        <tr><td><code>.env.example</code> / <code>.env</code></td><td>环境变量模板与真实配置（真实 <code>.env</code> 被 gitignore 排除）</td></tr>
+        <tr><td><code>.gitignore</code></td><td>排除 <code>.env</code>、数据卷、虚拟环境、IDE 文件</td></tr>
+        <tr><td><code>scripts/bootstrap.ps1</code></td><td>Windows 一键引导脚本（体检 → 装 Docker → 拉镜像 → 启动 → 验证）</td></tr>
+        <tr><td><code>scripts/verify.ps1</code> / <code>verify.sh</code></td><td>五个端点的健康检查（PowerShell 版 + Bash 版）</td></tr>
+        <tr><td><code>scripts/start.sh</code> / <code>stop.sh</code></td><td>Bash 环境的启停脚本</td></tr>
+        <tr><td><code>README.md</code> / <code>docs/ARCHITECTURE.md</code></td><td>使用说明与架构文档</td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================= 2. 时间线 ================= -->
+<section>
+  <h2><span class="num">2</span>时间线：这一路是怎么走过来的</h2>
+  <p class="sub">六个代码提交节点 + 中间的关键操作。每个提交都是一个"存档点"。</p>
+
+  <div class="tl">
+    <div class="tl-item done">
+      <div class="tl-time">09-14 21:55 · 起点</div>
+      <div class="tl-title">需求确认 + 技术选型</div>
+      <div class="tl-desc">环境扫描发现：Git 已装、Docker 未装。经确认选定 <b>Qdrant</b>（向量库）+ 多家 LLM 配置位（DeepSeek 主用），避开 Milvus 的多组件依赖。</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-time">09-14 22:12 · <code>3d0be0b</code></div>
+      <div class="tl-title">项目骨架落地</div>
+      <div class="tl-desc">一次性写出 8 个文件：compose 编排、环境变量模板、gitignore、README、三个 Bash 脚本。本地 git 初始化并完成首次提交。</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-time">09-14 22:21 · <code>430b330</code></div>
+      <div class="tl-title">补齐 Windows 路径</div>
+      <div class="tl-desc">因用户反馈"怎么没说安装"，新增 <code>bootstrap.ps1</code>（一键引导）和 <code>verify.ps1</code>（PowerShell 版健康检查），把"手动五步"压缩成"一条命令"。</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-time">09-14 23:08 · <code>217d6d0</code></div>
+      <div class="tl-title">修复中文乱码导致的语法错误</div>
+      <div class="tl-desc">脚本以 UTF-8 无 BOM 保存，Windows PowerShell 5.1 按 GBK 解读导致乱码，连锁报出"参数列表中缺少参量"。给两个脚本加上 UTF-8 BOM 头并做解析器语法校验（0 错误）。</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-time">09-14 23:11 · <code>eca59df</code></div>
+      <div class="tl-title">权限自检改为自动提权</div>
+      <div class="tl-desc">原来检测到非管理员就退出，改为通过 UAC 自动以管理员身份重启自身，普通窗口也能直接跑。</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-time">09-14 23:20 → 09-15 10:00 · 环境攻坚</div>
+      <div class="tl-title">Docker Desktop / WSL2 / Ubuntu / 镜像加速器</div>
+      <div class="tl-desc">这一夜是"外网环境"最难的阶段：安装 Docker Desktop → 缺 WSL2 → 发行版下载超时 → 安装位置报错 → Docker Hub 拉不动镜像 → 加速器地址配错 → 403。逐个击破（详见第 4 节 P3–P9）。</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-time">09-15 10:12 · <code>4e6f5c8</code></div>
+      <div class="tl-title">让脚本"不撒谎"</div>
+      <div class="tl-desc">bootstrap 原先在镜像全部拉取失败后仍打印"环境已就绪"；改为自动启动 Docker Desktop 并等待 daemon 就绪、校验 pull/verify 的退出码、失败即终止并给提示。</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-time">09-15 10:34 · <code>3a8c707</code></div>
+      <div class="tl-title">修复 Qdrant 健康检查（最后一公里）</div>
+      <div class="tl-desc">发现两个隐藏 bug：Qdrant 镜像内没有 <code>wget</code> 命令，且 <code>/healthz</code> 返回的是 <code>healthz check passed</code> 而脚本在匹配 <code>ok</code>。改用 bash 探针 + 判定 HTTP 200，五个端点全绿。</div>
+    </div>
+    <div class="tl-item done">
+      <div class="tl-time">09-15 10:40 · 收尾</div>
+      <div class="tl-title">GitHub 推送成功</div>
+      <div class="tl-desc">依次解决：git 命令不在 PATH → 证书吊销检查失败 → CA 证书链缺失 → 凭证存储选择，最终 <code>main</code> 分支推送成功并与 <code>origin/main</code> 同步。</div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 3. 最终架构 ================= -->
+<section>
+  <h2><span class="num">3</span>最终架构：这些组件各自是干什么的</h2>
+  <p class="sub">一张图看清四个服务的位置和职责。</p>
+
+  <div class="arch">
+    <svg viewBox="0 0 900 440" width="100%" style="max-width:900px;display:block;margin:0 auto;" xmlns="http://www.w3.org/2000/svg">
+      <defs>
+        <marker id="ar" markerWidth="9" markerHeight="9" refX="7" refY="3.2" orient="auto">
+          <path d="M0,0 L7,3.2 L0,6.4 z" fill="#8a99ad"/>
+        </marker>
+      </defs>
+
+      <!-- 宿主机边框 -->
+      <rect x="14" y="14" width="872" height="412" rx="14" fill="#fafbfc" stroke="#dfe4ea" stroke-width="1.5"/>
+      <text x="34" y="42" font-family="Segoe UI, sans-serif" font-size="13.5" font-weight="700" fill="#4a5158">Windows 宿主机</text>
+      <text x="34" y="60" font-family="Segoe UI, sans-serif" font-size="11.5" fill="#8a99ad">你的电脑 · 其中 C 盘承载 Docker Desktop 与 WSL2 内核</text>
+
+      <!-- WSL2 容器区 -->
+      <rect x="34" y="76" width="832" height="250" rx="12" fill="#eef4ff" stroke="#c9dcfa" stroke-width="1.5"/>
+      <text x="54" y="102" font-family="Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#2f6feb">WSL2 轻量虚拟机（Linux 内核翻译层）· 由 Docker Desktop 托管</text>
+      <text x="54" y="120" font-family="Segoe UI, sans-serif" font-size="11.5" fill="#5b7bb5">Docker Engine 在这里运行，四个容器都住在其中</text>
+
+      <!-- 四个容器 -->
+      <g font-family="Segoe UI, sans-serif">
+        <!-- postgres -->
+        <rect x="54" y="136" width="188" height="96" rx="10" fill="#ffffff" stroke="#c9dcfa"/>
+        <rect x="54" y="136" width="188" height="4" rx="2" fill="#12894f"/>
+        <text x="148" y="164" text-anchor="middle" font-size="13.5" font-weight="700" fill="#1a1d21">PostgreSQL 16</text>
+        <text x="148" y="184" text-anchor="middle" font-size="11.5" fill="#7a838c">关系型数据库</text>
+        <text x="148" y="202" text-anchor="middle" font-size="11.5" fill="#7a838c">存业务数据 / 会话</text>
+        <text x="148" y="220" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#12894f">:5432</text>
+
+        <!-- redis -->
+        <rect x="258" y="136" width="188" height="96" rx="10" fill="#ffffff" stroke="#c9dcfa"/>
+        <rect x="258" y="136" width="188" height="4" rx="2" fill="#12894f"/>
+        <text x="352" y="164" text-anchor="middle" font-size="13.5" font-weight="700" fill="#1a1d21">Redis 7</text>
+        <text x="352" y="184" text-anchor="middle" font-size="11.5" fill="#7a838c">内存键值数据库</text>
+        <text x="352" y="202" text-anchor="middle" font-size="11.5" fill="#7a838c">缓存 / 任务队列</text>
+        <text x="352" y="220" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#12894f">:6379</text>
+
+        <!-- qdrant -->
+        <rect x="462" y="136" width="188" height="96" rx="10" fill="#ffffff" stroke="#c9dcfa" stroke-width="2"/>
+        <rect x="462" y="136" width="188" height="4" rx="2" fill="#2f6feb"/>
+        <text x="556" y="162" text-anchor="middle" font-size="13.5" font-weight="700" fill="#1a1d21">Qdrant 1.12.4</text>
+        <text x="556" y="180" text-anchor="middle" font-size="11.5" fill="#7a838c">向量数据库（本项目核心）</text>
+        <text x="556" y="199" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#2f6feb">REST :6333</text>
+        <text x="556" y="217" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#2f6feb">gRPC :6334</text>
+
+        <!-- adminer -->
+        <rect x="666" y="136" width="182" height="96" rx="10" fill="#ffffff" stroke="#c9dcfa"/>
+        <rect x="666" y="136" width="182" height="4" rx="2" fill="#8a99ad"/>
+        <text x="757" y="164" text-anchor="middle" font-size="13.5" font-weight="700" fill="#1a1d21">Adminer</text>
+        <text x="757" y="184" text-anchor="middle" font-size="11.5" fill="#7a838c">数据库网页控制台</text>
+        <text x="757" y="202" text-anchor="middle" font-size="11.5" fill="#7a838c">仅开发调试用</text>
+        <text x="757" y="220" text-anchor="middle" font-size="11" font-family="Consolas, monospace" fill="#7a838c">:8080</text>
+
+        <!-- 容器标签 -->
+        <text x="54" y="258" font-size="11.5" fill="#5b7bb5">容器命名：rag-postgres / rag-redis / rag-qdrant / rag-adminer</text>
+        <text x="54" y="279" font-size="11.5" fill="#5b7bb5">数据持久化：挂载到本机 Docker Volume，容器删除数据不丢</text>
+        <text x="54" y="300" font-size="11.5" fill="#5b7bb5">统一由 docker-compose.yml 编排，一条命令全部拉起或停止</text>
+      </g>
+
+      <!-- 你的项目代码 -->
+      <rect x="34" y="342" width="832" height="64" rx="12" fill="#ffffff" stroke="#dfe4ea" stroke-width="1.5" stroke-dasharray="6 4"/>
+      <text x="54" y="367" font-family="Segoe UI, sans-serif" font-size="13" font-weight="700" fill="#4a5158">你的 RAG 应用代码（下一步要写的东西）</text>
+      <text x="54" y="388" font-family="Segoe UI, sans-serif" font-size="11.5" fill="#8a99ad">Python 脚本读 .env 拿 API Key → 通过 localhost:5432 / 6379 / 6333 连接上面这些服务</text>
+
+      <!-- 箭头 -->
+      <line x1="450" y1="336" x2="450" y2="332" stroke="#8a99ad" stroke-width="1.5" marker-end="url(#ar)"/>
+    </svg>
+  </div>
+
+  <div class="note term">
+    <b>一句话理解这四个组件：</b>PostgreSQL 是"仓库"（存结构化数据），Redis 是"桌面"（放常用东西，取用极快），Qdrant 是"图书馆检索系统"（按语义相似度找内容，RAG 的灵魂），Adminer 是"可视化管理界面"（方便你用浏览器看数据库，非必需）。
+  </div>
+</section>
+
+<!-- ================= 4. 问题全记录 ================= -->
+<section>
+  <h2><span class="num">4</span>问题全记录：16 个坑的根因与解法</h2>
+  <p class="sub">按类别分组。每条都写清"症状 → 根因 → 解法"，专业名词后附大白话解释。</p>
+
+  <h3>A 组 · 脚本自身的坑（P1–P2、P10–P11）</h3>
+
+  <div class="prob">
+    <div class="prob-head"><span class="prob-id">P1</span><h4>PowerShell 报"参数列表中缺少参量"，满屏乱码</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val">脚本第 44 行中文变成 <code>閫氳繃 winget 瀹夎...</code>，紧接着报出引号缺失、语句块不完整等一串解析错误。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val"><strong>字符编码不匹配。</strong>脚本文件存的是 UTF-8 <b>不带 BOM</b>，而中文版 Windows PowerShell 5.1 在没有 BOM 时默认按 <b>GBK</b> 解码。中文被错解成乱码后，某些字节序列恰好"吃掉"了字符串的引号，导致语法解析崩溃。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">给 <code>.ps1</code> 文件头部加 <b>UTF-8 BOM</b>（字节 <code>EF BB BF</code>）。BOM 是一个"我是 UTF-8"的标记，PowerShell 见到它就按正确编码解析。加完用 <code>[Parser]::ParseFile()</code> 做语法校验，确认 0 错误。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">相当于给中文文件贴了张"请用中文读我"的标签。不贴标签，系统就按英文规则硬读，读出一堆鬼画符，连带把标点也搞乱了。</div></div>
+  </div>
+
+  <div class="prob">
+    <div class="prob-head"><span class="prob-id">P2</span><h4>脚本一启动就退出，提示"需要管理员身份"</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val">普通 PowerShell 窗口运行脚本，检测到非管理员后直接 <code>exit 1</code>，需要用户手动重开管理员窗口。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val">安装 Docker Desktop 需要管理员权限（要写系统目录、注册服务）。原脚本用 <code>WindowsPrincipal.IsInRole()</code> 判断权限，不满足就中止——逻辑正确但体验差。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">改为<b>自动提权</b>：检测到非管理员时，用 <code>Start-Process pwsh -Verb RunAs</code> 弹出 <b>UAC</b>（用户账户控制）授权框，用户点"是"后脚本以管理员身份重启自身，流程无缝继续。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">原来像保安拦下你说"你没权限，自己去找经理"，改成像保安直接给你开门并帮你叫了经理，你点个头就行。</div></div>
+  </div>
+
+  <div class="prob">
+    <div class="prob-head"><span class="prob-id">P10</span><h4>Qdrant 容器永远显示 unhealthy，健康检查一直失败</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val">Qdrant 容器在跑、gRPC 端口探测通过，但 REST 端点验证失败，容器状态始终不是 healthy。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val"><strong>两个独立的 bug 撞在一起：</strong><br>
+      ① compose 里的健康检查命令用了 <code>wget</code>，但 <b>Qdrant 官方镜像里根本没装 wget</b>（它是精简镜像），命令必然执行失败；<br>
+      ② 验证脚本在 <code>/healthz</code> 的返回内容里找字符串 <code>ok</code>，而 Qdrant 实际返回的是 <code>healthz check passed</code>——关键词永远匹配不上。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">① 用容器内确实存在的 <code>bash</code> 写 TCP 探针替代 wget；② 把判定逻辑从"内容包含 ok"改为"<b>HTTP 状态码 200</b>"——这是更严谨的健康判定方式，不依赖服务方自由编写的响应文本。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">第一个问题是"用一把不存在的钥匙去开锁"；第二个是"门其实开了，但你死盯着门牌上写不写'欢迎'两个字"。判"门能不能开"（状态码 200）比判"门牌写了啥"（内容含 ok）靠谱得多。</div></div>
+  </div>
+
+  <div class="prob">
+    <div class="prob-head"><span class="prob-id">P11</span><h4>镜像全部拉取失败，脚本却打印"环境已就绪"</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val">截图里四个服务全部报错 <code>no such host</code>，但脚本最后一行仍然输出绿色的 <code>[ OK ] RAG 基础环境已就绪!</code>——假的成功。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val">脚本调用外部命令后<b>没有检查退出码</b>。<code>docker compose pull</code> 失败只体现在输出文本里，脚本自身的执行流并不感知，于是继续往下走并打印成功信息。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">在每次关键外部调用后校验 <code>$LASTEXITCODE</code>；pull 失败则直接终止并提示"请配置镜像加速器"；verify 脚本的失败计数也会向上传递，最终汇总的结论与真实状态一致。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">原来像"外卖没送到，但系统照样弹'已送达'"。加退出码检查就是让脚本真的看一眼结果，别闭着眼睛报喜。</div></div>
+  </div>
+
+  <h3>B 组 · Windows 与 Docker 环境的坑（P3–P6）</h3>
+
+  <div class="prob warn">
+    <div class="prob-head"><span class="prob-id">P3</span><h4>Docker Desktop 无法由我自动安装</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val">用户期望"安装"是真实动作，但我无法直接完成。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val">Docker Desktop 是 <b>GUI 安装程序</b>，需要管理员权限，并会修改系统级状态（注册 Windows 服务、启用 Hyper-V/虚拟化组件、注册 WSL2 发行版）。这类全局系统变更不允许在受限环境中静默执行。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">改用 <code>winget</code>（Windows 官方包管理器）在用户自己的终端里执行 <code>winget install --id Docker.DockerDesktop</code>，把下载、校验、静默安装全部自动化，用户只需要在终端里确认一次。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">我不能替你在自己家里拆墙装门（那是你家的结构），但我可以帮你把装修队叫到门口，你开个门就行。</div></div>
+  </div>
+
+  <div class="prob warn">
+    <div class="prob-head"><span class="prob-id">P4</span><h4>Docker Desktop 启动后要求安装 WSL2</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val">Docker Desktop 首次启动弹出提示：缺少 WSL2 内核。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val">Docker 容器跑的镜像是 <b>Linux 程序</b>（postgres、redis、qdrant 官方镜像都是 Linux 构建），需要 Linux 内核才能运行。Windows 内核跑不了 Linux 程序，必须由 <b>WSL2</b>（Windows Subsystem for Linux 2，微软官方的轻量 Linux 虚拟机）提供这一层。Docker Desktop 从 2023 年起已把老的 Hyper-V 后端标为废弃，默认只走 WSL2。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">管理员权限执行 <code>wsl --install</code>，启用虚拟化平台并安装内核，然后重启。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">不是要你去"用 Linux"，而是给 Docker 准备一间能做"Linux 菜"的小厨房。你照常点菜，厨房在后台默默工作。</div></div>
+  </div>
+
+  <div class="prob warn">
+    <div class="prob-head"><span class="prob-id">P5</span><h4>WSL 内核装好了，但 Linux 发行版下载超时</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val"><code>已安装 适用于 Linux 的 Windows 子系统 2.7.14</code>，但接着报 <code>无法从 raw.githubusercontent.com 提取通讯组列表</code>，错误代码 <code>WINET_E_TIMEOUT</code>。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val">WSL 安装默认发行版时，需要从 GitHub 的 raw 内容域名拉取发行版清单。<code>raw.githubusercontent.com</code> 在国内网络环境下经常超时或被阻断。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">绕过发行版清单机制，直接用微软官方直链下载 Ubuntu 的 appx 安装包（<code>https://aka.ms/wslubuntu</code>，也可用 azureedge 镜像直链），再用 <code>Add-AppxPackage</code> 本地安装。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">自动售货机（WSL 清单）坏了，改成直接去仓库搬一箱货回来。</div></div>
+  </div>
+
+  <div class="prob warn">
+    <div class="prob-head"><span class="prob-id">P6</span><h4>安装 Ubuntu 报 0x80071772 / 注册失败</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val"><code>Add-AppxPackage</code> 看似执行完，但 <code>wsl -l -v</code> 显示没有任何已安装的发行版。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val">Windows 的"<b>新应用安装位置</b>"被设成了非系统盘。WSL 的发行版注册流程对安装位置有特殊要求（其虚拟磁盘与注册信息默认需要落在系统盘），指向非系统盘时会注册失败。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">两条路径：<b>方案 A</b>—临时把"新应用将保存到"改回 C 盘，安装完成后随时改回去（该设置只影响之后新装的应用，不会搬走已装内容）；<b>方案 B</b>（绕开该设置）— 下载 Ubuntu 根文件系统 tar 包，用 <code>wsl --import Ubuntu D:\WSL\Ubuntu &lt;tar&gt; --version 2</code> 直接导入到指定目录。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">这个设置相当于"新买的东西默认放哪个柜子"。WSL 的执照必须放在系统指定的柜子里，你却把它指到了另一个柜子，于是登记不上。要么临时把默认柜子改回来，要么跳过登记直接搬运。</div></div>
+  </div>
+
+  <h3>C 组 · 网络与镜像源的坑（P7–P9）</h3>
+
+  <div class="prob">
+    <div class="prob-head"><span class="prob-id">P7</span><h4>镜像全部拉取失败：no such host</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val">四个服务全部启动失败，报 <code>failed to resolve registry-1.docker.io</code>、<code>no such host</code>。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val"><b>Docker Hub 的镜像下载域名在国内网络下不可达。</b>Docker 默认从 <code>registry-1.docker.io</code> 拉取镜像，该域名长期受限，导致 DNS 解析失败或连接超时。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">在 Docker Desktop 的 <b>Docker Engine</b> 配置里加入 <code>registry-mirrors</code>（镜像加速器）列表，把拉取请求指向国内可访问的中转服务。配置格式为 JSON，改完需 Apply &amp; Restart 使 Dockerd 重新加载。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">原来要从"国外总店"发货，快递不通。加镜像加速器等于在国内设个中转仓，你在中转仓取货。</div></div>
+  </div>
+
+  <div class="prob">
+    <div class="prob-head"><span class="prob-id">P8</span><h4>配置的加速器全部失效（域名都解析不了）</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val">配置了中科大、网易、百度三个公开加速器后，仍然 <code>no such host</code>——连加速器的域名都解析失败。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val"><b>这些公开免费加速器已陆续停止服务。</b>国内外大量旧教程仍在引用它们，但服务实际早已下线，域名和 IP 都不再响应。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">改用<b>各家云厂商的专属加速器</b>（阿里云容器镜像服务为每个账号免费提供独立的加速地址）。这是目前最稳定的方案，但需要用户自行登录云账号领取。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">网上教程抄的是几年前的地图，上面的公交线路早停运了。得去问当地最新的官方线路表。</div></div>
+  </div>
+
+  <div class="prob">
+    <div class="prob-head"><span class="prob-id">P9</span><h4>加速器地址配了两处错：重复前缀 + 域名叠加</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val">请求 URL 变成 <code>https://https://4gviicxi9.mirror.aliyuncs.com<b>.mirror.aliyuncs.com</b>/...</code>，返回 403。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val"><b>复制粘贴两次错误叠加：</b>① 配置值里多写了一层 <code>https://</code> 协议头（JSON 值本身已是完整 URL，不允许再加）；② 域名后缀 <code>.mirror.aliyuncs.com</code> 出现了两遍——很可能是复制时把控制台里展示的完整地址与已带后缀的部分拼接了两次。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">只保留一行、只写一次协议头、只写一次域名后缀：<code>"https://4gviicxi9.mirror.aliyuncs.com"</code>。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">写信地址栏填成了"中国中国北京市北京市……"，邮局当然投不出去。</div></div>
+  </div>
+
+  <div class="prob good">
+    <div class="prob-head"><span class="prob-id">P9+</span><h4>阿里云加速器返回 403（附带发现）</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val">地址修正后连通但返回 <code>403 Forbidden</code>，说明服务器可达但拒绝代理请求。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val">该账号未开通容器镜像服务，或云厂商已收紧免费 Docker Hub 代理策略。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">换用社区维护的中转代理组合（daocloud、1panel、rat.dev、上海交大镜像站等），最终 <code>docker pull hello-world</code> 成功——<b>先用一个体积最小的镜像验证通道</b>，再跑完整拉取，避免浪费时间在几 GB 的镜像上试错。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">先寄一张明信片试试路通不通，通了再寄大箱子。</div></div>
+  </div>
+
+  <h3>D 组 · Git 与 GitHub 的坑（P12–P16）</h3>
+
+  <div class="prob">
+    <div class="prob-head"><span class="prob-id">P12</span><h4>PowerShell 里"找不到 git 命令"</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val"><code>git : 无法将"git"项识别为 cmdlet…</code>，但 git 明明装着（我一直在用）。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val"><b>PATH 环境变量未包含 git 可执行文件所在目录。</b>本机的 git 是随工具链附带的便携版（PortableGit），位于 <code>C:\Users\w1143\.workbuddy\binaries\PortableGit\versions\1.2.0\cmd</code>，该路径没有写入用户级 PATH，所以普通终端"看不见"它。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">用 <code>[Environment]::SetEnvironmentVariable("Path", ..., "User")</code> 把该目录追加进<b>用户级 PATH</b>（不动系统级 PATH，避免影响其他程序），然后<b>重启终端</b>使新环境变量生效。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">工具放在仓库里，但你的通讯录里没登记它的号码，所以叫不出来。把它加进通讯录（PATH），并且要重新打开电话簿（重启终端）才生效。</div></div>
+  </div>
+
+  <div class="prob">
+    <div class="prob-head"><span class="prob-id">P13</span><h4>git push 报 CRYPT_E_NO_REVOCATION_CHECK (0x80092012)</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val">推送时报"吊销功能无法检查证书是否吊销"，HTTPS 握手失败。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val">Windows 的 TLS 组件（<b>schannel</b>）在校验证书时，需要联网向 CA 的 <b>OCSP/CRL</b> 服务确认"这张证书有没有被吊销"。该网络路径不可达时，schannel 出于安全考虑直接判定握手失败——<b>保守失败</b>策略。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">两条命令切换 TLS 行为：<br>
+      <code>git config --global http.schannelCheckRevoke false</code>（跳过吊销状态查询）<br>
+      <code>git config --global http.sslBackend openssl</code>（改用 git 自带的 OpenSSL 后端替代系统 schannel）</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">门卫要打一个电话核实你的证件真伪，电话打不通，他就一律不放行。改成"电话打不通时按证件本身判断"即可。</div></div>
+  </div>
+
+  <div class="prob">
+    <div class="prob-head"><span class="prob-id">P14</span><h4>切换后端后新错：unable to get local issuer certificate</h4></div>
+    <div class="row"><div class="lbl">症状</div><div class="val">改用 OpenSSL 后端后，报"无法获取本地颁发者证书"。</div></div>
+    <div class="row"><div class="lbl">根因</div><div class="val"><b>OpenSSL 找不到 CA 根证书包（trust store）。</b>schannel 用的是 Windows 系统证书库，而 OpenSSL 需要显式指定一个 <code>ca-bundle.crt</code> 文件。便携版 Git 不会自动指向自带的证书包，于是无法构建完整的证书链。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">显式指定证书包路径：<br>
+      <code>git config --global http.sslCAInfo "C:\...\PortableGit\versions\1.2.0\mingw64\etc\ssl\certs\ca-bundle.crt"</code></div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">新门卫不认市政府发的公章，你得告诉他"公章样本册放在这格柜子里"。</div></div>
+  </div>
+
+  <div class="prob info">
+    <div class="prob-head"><span class="prob-id">P15</span><h4>弹窗问"凭证存哪里"（Select a credential helper）</h4></div>
+    <div class="row"><div class="lbl">性质</div><div class="val">这不是错误，是 Git for Windows 的首次交互引导。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">选择 <code>manager</code>（Git Credential Manager）并勾选 <b>Always use this from now on</b>，让系统安全地记住凭证，后续推送不再反复输入。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">银行问你要不要开通"免密记忆"服务。勾上，下次不用再输。</div></div>
+  </div>
+
+  <div class="prob info">
+    <div class="prob-head"><span class="prob-id">P16</span><h4>GitHub 不再接受账号密码直接推送</h4></div>
+    <div class="row"><div class="lbl">背景</div><div class="val">GitHub 自 2021 年起取消了对"账号 + 登录密码"的 HTTPS 推送支持。</div></div>
+    <div class="row"><div class="lbl">解法</div><div class="val">改用 <b>Personal Access Token（PAT）</b>：在 GitHub 设置里生成一个有 <code>repo</code> 权限的令牌，推送时把令牌当作密码输入。更顺滑的方式是走 Credential Manager 的浏览器授权流程。</div></div>
+    <div class="row"><div class="lbl">大白话</div><div class="val">以前进楼用身份证（密码），现在要专用门禁卡（Token）。卡能设有效期、能随时注销，比身份证安全。</div></div>
+  </div>
+</section>
+
+<!-- ================= 5. 术语表 ================= -->
+<section>
+  <h2><span class="num">5</span>术语速查表</h2>
+  <p class="sub">左边是专业说法，右边是大白话。以后看文档、搜报错都用得上。</p>
+
+  <div class="gloss">
+    <div class="gl">
+      <div class="term">容器 / Container</div>
+      <div class="pro">把应用和它的运行环境（依赖库、配置）打包成一个标准化单元，在任何支持容器的机器上行为一致。</div>
+      <div class="plain">像"预制菜"——食材、调料、火候全封装在盒子里，走到哪台灶上味道都一样。</div>
+    </div>
+    <div class="gl">
+      <div class="term">镜像 / Image</div>
+      <div class="pro">容器的只读模板，包含文件系统与启动配置。容器是镜像的运行实例。</div>
+      <div class="plain">镜像是"菜谱 + 半成品"，容器是"按这份菜谱做出来正在吃的那一份"。</div>
+    </div>
+    <div class="gl">
+      <div class="term">Docker Compose</div>
+      <div class="pro">用一个 YAML 文件声明多个容器的编排关系（镜像、端口、数据卷、依赖顺序、健康检查），一条命令全部拉起。</div>
+      <div class="plain">像"套餐下单"——一次点四个菜，后厨按菜单同时开工，不用一道一道喊。</div>
+    </div>
+    <div class="gl">
+      <div class="term">WSL2</div>
+      <div class="pro">Windows Subsystem for Linux 2，基于 Hyper-V 的轻量虚拟化，提供真实 Linux 内核。</div>
+      <div class="plain">Windows 家里隔出来的"Linux 小厨房"，专门用来跑 Linux 程序。</div>
+    </div>
+    <div class="gl">
+      <div class="term">健康检查 / healthcheck</div>
+      <div class="pro">Docker 按固定间隔执行的探测命令，用于判断服务是否真正可用，结果影响容器的 healthy / unhealthy 状态与依赖启动顺序。</div>
+      <div class="plain">定期给服务"量体温"，正常就挂绿牌，异常挂红牌，别的服务看牌决定要不要开始干活。</div>
+    </div>
+    <div class="gl">
+      <div class="term">幂等 / Idempotent</div>
+      <div class="pro">同一操作执行一次与执行多次，对系统产生的最终状态相同。</div>
+      <div class="plain">电梯按钮——按一次和连按五次，电梯该来还是来一次。所以 bootstrap 脚本可以放心反复跑。</div>
+    </div>
+    <div class="gl">
+      <div class="term">环境变量 / .env</div>
+      <div class="pro">以键值对形式向进程注入配置，避免把密钥、地址硬编码进代码。</div>
+      <div class="plain">写给程序看的"便签纸"，上面记着密码和地址。因为含密码，所以不放进代码仓库。</div>
+    </div>
+    <div class="gl">
+      <div class="term">.gitignore</div>
+      <div class="pro">声明哪些文件不纳入版本控制。</div>
+      <div class="plain">"这些文件别拍进快照"的清单——用来挡住密钥、数据文件、缓存。</div>
+    </div>
+    <div class="gl">
+      <div class="term">commit / 提交</div>
+      <div class="pro">把工作区当前的变更打包成一次带作者、时间、说明的历史记录存入版本库。</div>
+      <div class="plain">游戏存档点。随时可以读回任意一次存档，等于无限后悔药。</div>
+    </div>
+    <div class="gl">
+      <div class="term">git 与 GitHub</div>
+      <div class="pro">git 是分布式的本地版本控制系统；GitHub 是托管 git 仓库的云端服务平台，通过 push / pull 同步。</div>
+      <div class="plain">git 是记账方法，GitHub 是用这套方法开的"云账本银行"。账本原件在你手里，银行存一份备份还能给别人看。</div>
+    </div>
+    <div class="gl">
+      <div class="term">registry mirror / 镜像加速器</div>
+      <div class="pro">Docker 拉取镜像时的中转代理，缓解官方仓库在特定网络下不可达的问题。</div>
+      <div class="plain">国内中转仓。原厂发货太慢，先囤一批到国内，你从国内取。</div>
+    </div>
+    <div class="gl">
+      <div class="term">BOM / 字节序标记</div>
+      <div class="pro">文件开头的 <code>EF BB BF</code> 字节，显式声明该文件为 UTF-8 编码。</div>
+      <div class="plain">贴在文件首页的"请按中文读我"标签，防止系统用错编码读出一堆乱码。</div>
+    </div>
+    <div class="gl">
+      <div class="term">UAC / 用户账户控制</div>
+      <div class="pro">Windows 的权限提升机制，高风险操作必须由用户显式授权。</div>
+      <div class="plain">系统弹出的"是否允许此应用更改你的设备"弹窗，你点"是"才算授权。</div>
+    </div>
+    <div class="gl">
+      <div class="term">向量数据库 / RAG</div>
+      <div class="pro">把文本转成高维向量存储，按语义相似度检索的数据库。RAG（检索增强生成）即"先检索相关知识、再让大模型基于检索结果作答"。</div>
+      <div class="plain">普通搜索靠"字面匹配"，它靠"意思相近"。RAG 就是让 AI 答题前先翻一遍你给的资料，而不是凭记忆瞎说。</div>
+    </div>
+  </div>
+</section>
+
+<!-- ================= 6. 我改了什么 ================= -->
+<section>
+  <h2><span class="num">6</span>透明度：我改了你电脑上的什么</h2>
+  <p class="sub">每次改动都有记录，你可以随时自己核对。</p>
+
+  <div class="panel tight">
+    <table>
+      <thead><tr><th>时间</th><th>提交号</th><th>改动内容</th><th>触发原因</th></tr></thead>
+      <tbody>
+        <tr><td>09-14 22:12</td><td><code>3d0be0b</code></td><td>创建整个项目（8 个文件）</td><td>初始交付</td></tr>
+        <tr><td>09-14 22:21</td><td><code>430b330</code></td><td>新增 bootstrap / verify 脚本</td><td>你问"怎么没安装"</td></tr>
+        <tr><td>09-14 23:08</td><td><code>217d6d0</code></td><td>两个 ps1 加 UTF-8 BOM</td><td>你第一次报错（乱码）</td></tr>
+        <tr><td>09-14 23:11</td><td><code>eca59df</code></td><td>权限检查改为自动提权</td><td>你第二次报错（非管理员）</td></tr>
+        <tr><td>09-15 10:12</td><td><code>4e6f5c8</code></td><td>自动启动 Docker、校验退出码、清理过时字段</td><td>假成功 + 需手动启动 Docker</td></tr>
+        <tr><td>09-15 10:34</td><td><code>3a8c707</code></td><td>修正 Qdrant 健康检查与验证逻辑</td><td>REST 端点验证一直失败</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <pre><code><span class="c"># 你自己随时可以查</span>
+cd D:\WorkBuddy_Workspace\2026-09-14-21-55-49\rag-knowledge-qa
+git log --oneline          <span class="c"># 看所有改动记录</span>
+git show 3a8c707           <span class="c"># 看某次改动的具体 diff</span>
+notepad scripts\bootstrap.ps1   <span class="c"># 直接打开文件看我改完的样子</span></code></pre>
+
+  <div class="note">
+    <b>改动范围：</b>全部集中在 <code>D:\WorkBuddy_Workspace\2026-09-14-21-55-49\rag-knowledge-qa</code> 这个项目文件夹内，以及工具自身的记忆文件。<b>没有</b>触碰系统设置、注册表或其他目录。中途我在 C 盘临时产生的文件（技能包、下载失败的安装包残留）已在你的要求下清理干净。
+  </div>
+</section>
+
+<!-- ================= 7. 常用命令 ================= -->
+<section>
+  <h2><span class="num">7</span>日常命令速查</h2>
+  <p class="sub">存下来，以后直接抄。</p>
+
+  <div class="panel">
+    <h3 style="margin-top:0;">Docker 服务管理</h3>
+    <pre><code>cd D:\WorkBuddy_Workspace\2026-09-14-21-55-49\rag-knowledge-qa
+
+docker compose ps              <span class="c"># 看四个容器状态</span>
+docker compose logs -f         <span class="c"># 实时看所有服务日志（Ctrl+C 退出）</span>
+docker compose logs -f qdrant  <span class="c"># 只看某个服务</span>
+docker compose stop            <span class="c"># 停止服务（容器保留、数据保留）</span>
+docker compose up -d           <span class="c"># 重新启动</span>
+docker compose down            <span class="c"># 删除容器（数据卷保留，数据不丢）</span></code></pre>
+
+    <h3>健康检查</h3>
+    <pre><code>powershell -ExecutionPolicy Bypass -File scripts\verify.ps1    <span class="c"># Windows</span>
+bash scripts/verify.sh                                        <span class="c"># Git Bash / WSL</span></code></pre>
+
+    <h3>Git 版本控制</h3>
+    <pre><code>git status                     <span class="c"># 当前有哪些未存档的改动</span>
+git add .                      <span class="c"># 把改动标记为"准备存档"</span>
+git commit -m "说明文字"        <span class="c"># 存档</span>
+git push                       <span class="c"># 推送到 GitHub</span>
+git log --oneline              <span class="c"># 翻历史账本</span></code></pre>
+
+    <h3>访问入口</h3>
+    <table>
+      <thead><tr><th>服务</th><th>地址 / 参数</th></tr></thead>
+      <tbody>
+        <tr><td>Adminer 数据库控制台</td><td><code>http://localhost:8080</code> · 服务器填 <code>rag-postgres</code>，用户 <code>raguser</code> / 密码 <code>ragpass</code> / 库 <code>ragdb</code></td></tr>
+        <tr><td>Qdrant 控制台</td><td><code>http://localhost:6333/dashboard</code></td></tr>
+        <tr><td>PostgreSQL 直连</td><td><code>localhost:5432</code></td></tr>
+        <tr><td>Redis 直连</td><td><code>localhost:6379</code></td></tr>
+      </tbody>
+    </table>
+  </div>
+</section>
+
+<!-- ================= 8. 下一步 ================= -->
+<section>
+  <h2><span class="num">8</span>接下来可以做什么</h2>
+  <p class="sub">环境已经准备好了，下面是真正写 RAG 的部分。</p>
+
+  <div class="panel">
+    <table>
+      <thead><tr><th>步骤</th><th>要做的事</th><th>涉及组件</th></tr></thead>
+      <tbody>
+        <tr><td>① 文档解析与切分</td><td>把 PDF / Word / Markdown 读进来，切成合适大小的文本块（chunking）</td><td>Python 应用层</td></tr>
+        <tr><td>② 向量化</td><td>调用 Embedding 模型把每块文本转成向量</td><td>DeepSeek / OpenAI 等 LLM API</td></tr>
+        <tr><td>③ 入库</td><td>向量 + 原文 + 元数据写入向量库，建索引</td><td>Qdrant (:6333)</td></tr>
+        <tr><td>④ 检索</td><td>用户提问 → 问题向量化 → 相似度检索 Top-K</td><td>Qdrant + Redis 缓存</td></tr>
+        <tr><td>⑤ 生成</td><td>把检索到的上下文拼进 Prompt，交给大模型作答</td><td>LLM API</td></tr>
+        <tr><td>⑥ 会话与记录</td><td>多轮对话历史、问答日志落库</td><td>PostgreSQL (:5432)</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="note warn">
+    <b>唯一待办：</b>打开 <code>.env</code> 填入至少一个 LLM API Key。项目本身不需要它也能跑（容器与数据库都已就绪），但真正调用大模型做问答时需要。
+    <pre style="margin:10px 0 0;"><code>cd D:\WorkBuddy_Workspace\2026-09-14-21-55-49\rag-knowledge-qa
+notepad .env
+<span class="c"># 填这一行：DEEPSEEK_API_KEY=sk-你的key</span></code></pre>
+  </div>
+</section>
+
+<footer>
+  本文档由 WorkBuddy 根据实际执行记录生成 · 数据采集时间 2026-09-15 11:09<br>
+  项目仓库：https://github.com/wangzhifu00/rag-knowledge-qa
+</footer>
+
+</div>
+</body>
+</html>
