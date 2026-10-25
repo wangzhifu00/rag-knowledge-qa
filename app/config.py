@@ -32,9 +32,16 @@ class Settings(BaseSettings):
     qdrant_port: int = 6333
 
     # ---------- LLM ----------
+    # 用哪家由 LLM_PROVIDER 决定（deepseek / openai / qwen / glm），改 .env 即可切换
+    llm_provider: str = "deepseek"
+
     deepseek_api_key: str = ""
     deepseek_base_url: str = "https://api.deepseek.com/v1"
     deepseek_model: str = "deepseek-chat"
+
+    openai_api_key: str = ""
+    openai_base_url: str = "https://api.openai.com/v1"
+    openai_model: str = "gpt-4o-mini"
 
     # ---------- 应用 ----------
     app_port: int = 8000
@@ -44,7 +51,7 @@ class Settings(BaseSettings):
     # @property 表示调用时不用加括号：settings.postgres_dsn。
     @property
     def postgres_dsn(self) -> str:
-        """拼出 psycopg 用的连接串。
+        """
         拼接格式是标准的 postgresql://用户:密码@主机:端口/库名
         """
         return (
@@ -60,11 +67,35 @@ class Settings(BaseSettings):
     @property
     def postgres_dsn_async(self) -> str:
         """SQLAlchemy 异步驱动(asyncpg)专用连接串。
-
-        区别在协议头：postgresql:// 是同步驱动(psycopg)用的，
+        区别在协议头：
+        postgresql:// 是同步驱动(psycopg)用的，
         postgresql+asyncpg:// 告诉 SQLAlchemy 用异步驱动。
         """
         return self.postgres_dsn.replace("postgresql://", "postgresql+asyncpg://")
+
+    # ---------- LLM 切换：按 provider 取对应的 key/url/model ----------
+    # 生成层代码只认 llm_api_key/llm_base_url/llm_model 这三个"统一出口"，
+    # 以后加 qwen/glm 就是在下面字典里多两行，业务代码零改动
+    @property
+    def llm_api_key(self) -> str:
+        return {
+            "deepseek": self.deepseek_api_key,
+            "openai": self.openai_api_key,
+        }[self.llm_provider]
+
+    @property
+    def llm_base_url(self) -> str:
+        return {
+            "deepseek": self.deepseek_base_url,
+            "openai": self.openai_base_url,
+        }[self.llm_provider]
+
+    @property
+    def llm_model(self) -> str:
+        return {
+            "deepseek": self.deepseek_model,
+            "openai": self.openai_model,
+        }[self.llm_provider]
 
 #@lru_cache 让函数只在第一次调用时构造 Settings()（也就只读一次 .env、做一次校验），之后永远返回同一个对象。
 @lru_cache
