@@ -9,3 +9,5 @@ openai>=1.50.0               # DeepSeek API 兼容 OpenAI 协议
 psycopg[binary]>=3.2.0       # PostgreSQL 异步客户端,存原文/元数据
 redis>=5.0.0                 # 缓存(预留)
 pypdf>=5.0.0                 # PDF 加载(可选,后续用)
+fastapi>=0.115.0             # Web 框架
+uvicorn[standard]>=0.30.0    # ASGI 服务器

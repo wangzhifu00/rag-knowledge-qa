@@ -10,21 +10,29 @@
 | 元数据库 | **PostgreSQL 16** | 用户、会话、文档元信息 |
 | 缓存/队列 | **Redis 7** | 检索结果缓存、异步任务队列 |
 | LLM | DeepSeek / OpenAI / Qwen / GLM | 答案生成（可切换） |
-| Embedding | text-embedding-3-small (默认) | 文档向量化 |
+| Embedding | fastembed（本地 ONNX，当前 `BAAI/bge-small-zh-v1.5`，计划切换 BGE-M3） | 文档向量化 |
 | 可视化 | Adminer | Postgres Web 管理 |
 
 ## 目录结构
 
 ```
 rag-knowledge-qa/
-├── docker-compose.yml      # 一键拉起 Postgres + Redis + Qdrant + Adminer
-├── .env.example            # 环境变量模板(复制为 .env 并填入 API Key)
-├── scripts/
-│   ├── start.sh            # 启动所有服务
-│   ├── stop.sh             # 停止所有服务
-│   └── verify.sh           # 健康检查与连通性验证
+├── app/                    # FastAPI 后端(骨架待实现)
+├── rag/                    # RAG 核心逻辑(解析、切分、检索、生成,待实现)
+├── tests/                  # 测试
+├── eval/                   # 评估数据集和脚本
+├── docker/
+│   └── docker-compose.yml  # 一键拉起 Postgres + Redis + Qdrant + Adminer
+├── data/                   # 测试文档(如 langchain_intro.pdf)
 ├── docs/
-│   └── ARCHITECTURE.md     # 架构说明(后续补充)
+│   ├── ARCHITECTURE.md     # 架构说明(后续补充)
+│   └── setup-retrospective.html
+├── scripts/
+│   ├── bootstrap.ps1       # 一键引导(Windows)
+│   ├── start.sh / stop.sh  # 启动/停止(有 CRLF 问题,建议用 .ps1)
+│   └── verify.sh / verify.ps1  # 健康检查(Windows 用 verify.ps1)
+├── requirements.txt        # Python 依赖
+├── .env.example            # 环境变量模板(复制为 .env 并填入 API Key)
 └── README.md
 ```
 
@@ -43,7 +51,7 @@ powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
 2. 没装 Docker 就用 winget 装 Docker Desktop
 3. 没建 `.env` 就从模板创建并提示你填 API Key
 4. `docker compose pull` + `up -d`
-6. 跑健康检查
+5. 跑健康检查
 
 ### 1. 手动路径
 
@@ -71,28 +79,37 @@ Copy-Item .env.example .env
 notepad .env    # 填入至少一个 LLM API Key
 ```
 
-#### 1.3 启动
+#### 1.3 Python 虚拟环境
 
 ```powershell
-# PowerShell 版(本机)
-powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
-
-# 或直接
-docker compose up -d
-
-# Git Bash / WSL
-bash scripts/start.sh
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+pip install -r requirements.txt
 ```
 
-#### 1.4 验证
+> 若 PowerShell 提示"禁止运行脚本"，先执行一次：
+> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
+
+#### 1.4 启动
+
+```powershell
+# 一键引导(推荐)
+powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
+
+# 或手动(compose 文件在 docker/ 子目录)
+docker compose -f docker/docker-compose.yml up -d
+```
+
+#### 1.5 验证
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File scripts\verify.ps1
-# 或
-bash scripts/verify.sh
 ```
 
-### 4. 访问管理界面
+> Windows 下请用 `.ps1` 版本；`scripts/*.sh` 目前是 CRLF 换行，Git Bash 直接跑会报 `$'\r'` 错误（待修复）。
+
+### 2. 访问管理界面
 
 | 服务 | 地址 | 凭据 |
 |------|------|------|
@@ -116,6 +133,9 @@ bash scripts/verify.sh
 - [ ] Embedding 批处理入库脚本
 - [ ] 检索 + Prompt 拼接 + LLM 生成
 - [ ] Web UI (Streamlit / Next.js)
+- [ ] Embedding 切换 BGE-M3(替换 fastembed 默认的 bge-small-zh-v1.5)
+- [ ] 修复 scripts/*.sh 的 CRLF 换行问题(或统一改为 .ps1)
+- [ ] 修复 bootstrap.ps1 / start.sh 中裸 docker compose 未指定 -f docker/docker-compose.yml 的问题
 
 ## License
 
