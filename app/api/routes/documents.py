@@ -17,6 +17,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.engine import get_db
 from app.db.models import Document
 from rag.chunker import chunk_pages
+from rag.cleaner import clean_pages
 from rag.embedder import get_embedder
 from rag.parser import parse_pdf
 from rag.retriever import (
@@ -56,6 +57,7 @@ async def process_document(doc_id: int, file_path: Path, filename: str) -> None:
         await _set_status(doc_id, "parsing")
 
         pages = await asyncio.to_thread(parse_pdf, file_path)
+        pages = await asyncio.to_thread(clean_pages, pages)  # B 阶段：清洗噪声行
         chunks = await asyncio.to_thread(chunk_pages, pages)
 
         await _set_status(doc_id, "embedding")

@@ -20,6 +20,7 @@ from sqlalchemy import select
 from app.db.engine import AsyncSessionLocal
 from app.db.models import Document
 from rag.chunker import chunk_pages
+from rag.cleaner import clean_pages
 from rag.embedder import get_embedder
 from rag.parser import parse_pdf
 from rag.retriever import (
@@ -66,9 +67,10 @@ async def main(pdf_path: str) -> None:
     filename = path.name
     t0 = time.time()
 
-    # 1. 解析
+    # 1. 解析 + 清洗（B 阶段新增：去页脚/导航/URL/碎片行）
     pages = parse_pdf(path)
-    print(f"[1/4] 解析完成：{len(pages)} 页有文本")
+    pages = clean_pages(pages)
+    print(f"[1/4] 解析+清洗完成：{len(pages)} 页有文本")
 
     # 2. 切分
     chunks = chunk_pages(pages, chunk_size=500, overlap=50)
