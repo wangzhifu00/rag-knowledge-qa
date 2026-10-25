@@ -13,3 +13,6 @@ fastapi>=0.115.0             # Web 框架
 uvicorn[standard]>=0.30.0    # ASGI 服务器
 pydantic-settings>=2.4.0     # 类型安全的配置读取(.env)
 httpx>=0.27.0                # 异步 HTTP 客户端(探测 Qdrant / 调 LLM)
+sqlalchemy[asyncio]>=2.0.30  # ORM(异步模式),表模型和查询
+asyncpg>=0.29.0              # PostgreSQL 异步驱动(SQLAlchemy 底层用它连库)
+alembic>=1.13.0              # 数据库迁移(表结构的版本管理)

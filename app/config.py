@@ -57,6 +57,15 @@ class Settings(BaseSettings):
         #形如：http://localhost:6333
         return f"http://{self.qdrant_host}:{self.qdrant_port}"
 
+    @property
+    def postgres_dsn_async(self) -> str:
+        """SQLAlchemy 异步驱动(asyncpg)专用连接串。
+
+        区别在协议头：postgresql:// 是同步驱动(psycopg)用的，
+        postgresql+asyncpg:// 告诉 SQLAlchemy 用异步驱动。
+        """
+        return self.postgres_dsn.replace("postgresql://", "postgresql+asyncpg://")
+
 #@lru_cache 让函数只在第一次调用时构造 Settings()（也就只读一次 .env、做一次校验），之后永远返回同一个对象。
 @lru_cache
 def get_settings() -> Settings:

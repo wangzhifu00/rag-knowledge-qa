@@ -34,7 +34,11 @@ logger = logging.getLogger(__name__)
 async def lifespan(app: FastAPI):
     logger.info("应用启动，Qdrant=%s", settings.qdrant_url)
     yield
-    logger.info("应用关闭")
+    #第③步新增：关闭时释放数据库连接池，否则 uvicorn 退出会有残留连接警告
+    from app.db.engine import engine
+
+    await engine.dispose()
+    logger.info("应用关闭（连接池已释放）")
     #yield 之前 = 启动时执行（以后在这里创建数据库连接池），
     #yield 之后 = 关闭时执行（释放连接池）。这就是服务"开机/关机"的钩子。
 
