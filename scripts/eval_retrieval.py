@@ -1,18 +1,25 @@
-"""检索质量评估脚本：B 阶段消融实验的量尺。
+"""检索质量评估：基于人工标注的 golden 集（10 题）。
+
+这是第⑦步的"尺子"——B 阶段的消融实验量的是"余弦分高低"，
+本脚本量的是"该找到的找到没 / 不该编的有没有拒"。
 
 用法（项目根目录）：
-    python scripts/eval_retrieval.py                        # baseline（不清洗, 500/50）
-    python scripts/eval_retrieval.py --clean                # 清洗后
-    python scripts/eval_retrieval.py --clean --chunk-size 300 --overlap 30
+    python scripts/eval_retrieval.py                                  # 双模式对比(默认 500/50 清洗)
+    python scripts/eval_retrieval.py --chunk-size 300 --overlap 30    # 换切分参数
+    python scripts/eval_retrieval.py --no-clean                       # 不清洗(baseline)
 
-做法：用固定的 8 个测试问题，把文档按指定参数重建成一个临时集合
-（eval_ 前缀，不碰正式的 documents_chunks），逐题检索后报：
-  top1 均分 / top5 均分 —— 越高说明"问题向量和正确原文靠得越近"
+指标定义：
+  hit@1      第一条就命中标准页的比例（answerable 题）
+  hit@5      前 5 条里含标准页的比例（answerable 题）
+  MRR        首个命中位置的倒数平均，反映"排得靠不靠前"
+  拒答正确率  库里没答案的题，top1 相似度低于门槛被判拒的比例
+
+做法：按指定参数把文档重建成临时集合（eval_tmp，不碰正式集合），
+向量/混合两种模式各跑一遍全部题目，最后给出对比表和阈值校准建议。
 跑完自动删除临时集合。
 """
 
 import argparse
-import re
 import sys
 from pathlib import Path
 
@@ -20,30 +27,37 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from qdrant_client import QdrantClient, models
 
+from app.config import get_settings
 from rag.chunker import chunk_pages
 from rag.cleaner import clean_pages
 from rag.embedder import get_embedder
+from rag.hybrid import hybrid_search, warmup_jieba
 from rag.parser import parse_pdf
-from rag.retriever import get_client
+from rag.retriever import best_vector_score, get_client, search
 
 PDF = "data/langchain_intro.pdf"
 EVAL_COLLECTION = "eval_tmp"
 
-# 固定测试问题集（8 个，覆盖概念/组件/操作/对比四类问法）
-QUESTIONS = [
-    "什么是LangChain",
-    "LangChain提供哪些模块",
-    "如何用LangChain做RAG",
-    "OpenAIEmbeddings怎么用",
-    "文本切分器是什么",
-    "DeepAgents是什么",
-    "怎么创建智能体",
-    "支持哪些向量数据库",
+# golden 标注集：pages=标准答案所在页（命中判定=检索结果的页码与之相交）
+#           pages=None 表示"库里没有答案"，正确行为是被拒答
+# 标注方法：关键词全文定位（2026-10-26 机标，用户已核对）
+TESTSET = [
+    {"q": "什么是LangChain",         "pages": None},       # 全文未介绍 LangChain 本身
+    {"q": "LangChain提供哪些模块",    "pages": None},       # 无模块列表章节
+    {"q": "如何用LangChain做RAG",    "pages": [1]},        # RAG patterns 介绍页
+    {"q": "OpenAIEmbeddings怎么用",  "pages": [10]},       # embeddings 用法 + VectorStore
+    {"q": "文本切分器是什么",         "pages": [9]},        # Split documents 章节
+    {"q": "DeepAgents是什么",        "pages": [1]},        # 首页 intro
+    {"q": "怎么创建智能体",           "pages": [12]},       # Build the agent 章节
+    {"q": "支持哪些向量数据库",       "pages": [10]},       # 集成列表(In-memory/AstraDB/Chroma...)
+    {"q": "怎么运行RAG agent",       "pages": [16]},       # Run the agent 章节
+    {"q": "文档切好块之后存到哪",     "pages": [10, 11]},   # VectorStore 持久化
 ]
 
 
 def build_index(client: QdrantClient, embedder, chunk_size: int, overlap: int,
                 clean: bool) -> int:
+    """按指定参数重建临时评估集合，返回块数。"""
     pages = parse_pdf(PDF)
     if clean:
         pages = clean_pages(pages)
@@ -56,53 +70,73 @@ def build_index(client: QdrantClient, embedder, chunk_size: int, overlap: int,
             size=embedder.dim, distance=models.Distance.COSINE
         ),
     )
-    upsert_chunks_eval(client, chunks, vectors)
-    return len(chunks)
-
-
-def upsert_chunks_eval(client: QdrantClient, chunks, vectors) -> None:
-    """评估专用的简化写入（固定集合名，不需要 filename 过滤）。"""
     points = [
         models.PointStruct(
             id=c.chunk_index,
             vector=v,
-            payload={"text": c.text, "page_numbers": c.page_numbers},
+            payload={
+                "text": c.text,
+                "filename": "eval.pdf",
+                "page_numbers": c.page_numbers,
+                "chunk_index": c.chunk_index,
+            },
         )
         for c, v in zip(chunks, vectors)
     ]
     client.upsert(collection_name=EVAL_COLLECTION, points=points)
+    return len(chunks)
 
 
-def evaluate(client: QdrantClient, embedder) -> dict:
-    top1_scores, top5_scores = [], []
-    nav_junk = 0    # 导航/页脚/碎片噪声（真正该清掉的）
-    code_lines = 0  # import/常量等代码行（教程正文，合法内容）
-    nav_re = re.compile(r"^(https?://\S+\s*)+$", re.M)
-    code_re = re.compile(r"^import |^from .+ import|DOCS_BASE", re.M)
-    footer_kw = ("changelog", "forum", "subscribe", "was this page", "interrupt is coming")
-    for q in QUESTIONS:
-        hits = client.query_points(
-            collection_name=EVAL_COLLECTION,
-            query=embedder.embed_query(q),
-            limit=5,
-        ).points
-        scores = [p.score for p in hits]
-        top1_scores.append(scores[0])
-        top5_scores.append(sum(scores) / len(scores))
-        for p in hits:
-            for ln in p.payload.get("text", "").splitlines():
-                s = ln.strip()
-                if nav_re.search(s) or len(s) < 6 or (
-                    len(s) < 80 and any(k in s.lower() for k in footer_kw)
-                ):
-                    nav_junk += 1
-                if code_re.search(s):
-                    code_lines += 1
+def run_one(client: QdrantClient, embedder, question: str, mode: str) -> list:
+    """单题检索：返回 SearchHit 列表（两种模式统一返回格式）。"""
+    if mode == "hybrid":
+        return hybrid_search(question, embedder, top_k=5,
+                             collection_name=EVAL_COLLECTION)
+    return search(client, embedder, question, top_k=5,
+                  collection_name=EVAL_COLLECTION)
+
+
+def evaluate_mode(client: QdrantClient, embedder, mode: str, min_score: float) -> dict:
+    """跑一种模式的全部题目，返回指标和逐题明细。"""
+    stats = {"hit1": 0, "hit5": 0, "mrr": [], "refusal_ok": 0, "n_refusal": 0}
+    details = []
+    pos_scores, neg_scores = [], []  # 有答案题/无答案题的 top1 分（阈值校准用）
+
+    for item in TESTSET:
+        q, golden = item["q"], item["pages"]
+        hits = run_one(client, embedder, q, mode)
+        top1 = best_vector_score(hits)
+
+        if golden is None:
+            # 应拒答题：top1 分低于门槛才算对
+            refused = top1 < min_score
+            stats["n_refusal"] += 1
+            stats["refusal_ok"] += int(refused)
+            neg_scores.append(top1)
+            details.append((q, "应拒答", "✅拒" if refused else "❌未拒", top1))
+            continue
+
+        # 有答案题：命中判定 = 结果页码与标准页相交
+        rank = next((i for i, h in enumerate(hits, 1)
+                     if set(h.page_numbers) & set(golden)), 0)
+        hit1 = rank == 1
+        hit5 = rank > 0
+        stats["hit1"] += int(hit1)
+        stats["hit5"] += int(hit5)
+        stats["mrr"].append(1.0 / rank if rank else 0.0)
+        pos_scores.append(top1)
+        tag = f"第{rank}位" if rank else "未命中"
+        details.append((q, "/".join(map(str, golden)), tag, top1))
+
+    n_ans = len(TESTSET) - stats["n_refusal"]
     return {
-        "avg_top1": sum(top1_scores) / len(top1_scores),
-        "avg_top5": sum(top5_scores) / len(top5_scores),
-        "nav_junk": nav_junk,
-        "code_lines": code_lines,
+        "details": details,
+        "hit1": stats["hit1"] / n_ans,
+        "hit5": stats["hit5"] / n_ans,
+        "mrr": sum(stats["mrr"]) / n_ans,
+        "refusal": stats["refusal_ok"] / stats["n_refusal"],
+        "pos_min": min(pos_scores),
+        "neg_max": max(neg_scores),
     }
 
 
@@ -110,21 +144,51 @@ def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("--chunk-size", type=int, default=500)
     ap.add_argument("--overlap", type=int, default=50)
-    ap.add_argument("--clean", action="store_true", help="启用文本清洗")
+    ap.add_argument("--clean", dest="clean", action="store_true", default=True)
+    ap.add_argument("--no-clean", dest="clean", action="store_false")
+    ap.add_argument("--mode", choices=["vector", "hybrid", "both"], default="both")
     args = ap.parse_args()
 
+    settings = get_settings()
     client = get_client()
     embedder = get_embedder()
+    warmup_jieba()
 
     n = build_index(client, embedder, args.chunk_size, args.overlap, args.clean)
-    result = evaluate(client, embedder)
+    label = "清洗" if args.clean else "不清洗"
+    print(f"\n评估集：{label} chunk={args.chunk_size}/{args.overlap} → {n} 块 | "
+          f"10 题（8 有答案 + 2 应拒答）| 拒答门槛 {settings.retrieval_min_score}\n")
 
-    mode = "清洗+重切" if args.clean else "baseline"
-    print(f"[{mode}] chunk_size={args.chunk_size} overlap={args.overlap} → {n} 块 | "
-          f"avg_top1={result['avg_top1']:.4f} | avg_top5={result['avg_top5']:.4f} | "
-          f"40条结果中: 导航噪声 {result['nav_junk']} 条, 代码行 {result['code_lines']} 条")
+    modes = ["vector", "hybrid"] if args.mode == "both" else [args.mode]
+    summary = {}
+    for mode in modes:
+        r = evaluate_mode(client, embedder, mode, settings.retrieval_min_score)
+        summary[mode] = r
+        name = "纯向量" if mode == "vector" else "混合(RRF)"
+        print(f"—— {name} ——")
+        for q, golden, tag, top1 in r["details"]:
+            print(f"  {tag:<7} top1={top1:.3f}  答案页[{golden}]  {q}")
+        print(f"  hit@1={r['hit1']:.0%}  hit@5={r['hit5']:.0%}  "
+              f"MRR={r['mrr']:.3f}  拒答正确率={r['refusal']:.0%}\n")
 
-    # 临时集合用完即删（正式的 documents_chunks 不受影响）
+    if len(summary) == 2:
+        v, h = summary["vector"], summary["hybrid"]
+        print("=" * 56)
+        print(f"对比：hit@5 {v['hit5']:.0%} → {h['hit5']:.0%} | "
+              f"MRR {v['mrr']:.3f} → {h['mrr']:.3f} | "
+              f"拒答 {v['refusal']:.0%} → {h['refusal']:.0%}")
+        print("=" * 56)
+
+    # 阈值校准建议：正例最低分与负例最高分之间取中点
+    pos = min(summary[m]["pos_min"] for m in summary)
+    neg = max(summary[m]["neg_max"] for m in summary)
+    if neg < pos:
+        print(f"阈值校准：正例最低 top1={pos:.3f}，负例最高 top1={neg:.3f}，"
+              f"建议门槛 ≈ {(pos + neg) / 2:.2f}")
+    else:
+        print(f"⚠️ 分数区间重叠（负例最高 {neg:.3f} ≥ 正例最低 {pos:.3f}），"
+              f"单靠分数门槛分不开，需保留 prompt 层兜底")
+
     client.delete_collection(EVAL_COLLECTION)
 
 

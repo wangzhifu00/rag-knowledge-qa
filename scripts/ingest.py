@@ -72,9 +72,10 @@ async def main(pdf_path: str) -> None:
     pages = clean_pages(pages)
     print(f"[1/4] 解析+清洗完成：{len(pages)} 页有文本")
 
-    # 2. 切分
-    chunks = chunk_pages(pages, chunk_size=500, overlap=50)
-    print(f"[2/4] 切分完成：{len(chunks)} 块（chunk_size=500, overlap=50）")
+    # 2. 切分（300/30 是 golden 集评估的胜出配置：
+    #    hit@1 25%→38%、MRR 0.42→0.52，详见 scripts/eval_retrieval.py）
+    chunks = chunk_pages(pages, chunk_size=300, overlap=30)
+    print(f"[2/4] 切分完成：{len(chunks)} 块（chunk_size=300, overlap=30）")
 
     # 3. 向量化（首次运行会下载模型，请耐心）
     embedder = get_embedder()

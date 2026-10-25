@@ -47,21 +47,21 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in jieba.cut_for_search(text) if t.strip()]
 
 
-def _load_corpus() -> tuple[list[SearchHit], int]:
+def _load_corpus(collection_name: str) -> tuple[list[SearchHit], int]:
     """从 Qdrant 全量拉 chunk（原文在 payload 里，它是当前唯一存放地）。
 
     返回 (所有 chunk 的 SearchHit 列表, 集合总点数)。
     """
     client = get_client()
     points, offset = client.scroll(
-        collection_name=COLLECTION_NAME,
+        collection_name=collection_name,
         limit=256,
         with_payload=True,
         with_vectors=False,  # 建关键词索引用不上向量，不拉省内存
     )
     while offset is not None:
         more, offset = client.scroll(
-            collection_name=COLLECTION_NAME,
+            collection_name=collection_name,
             limit=256,
             offset=offset,
             with_payload=True,
@@ -69,11 +69,11 @@ def _load_corpus() -> tuple[list[SearchHit], int]:
         )
         points.extend(more)
 
-    total = client.count(collection_name=COLLECTION_NAME, exact=True).count
+    total = client.count(collection_name=collection_name, exact=True).count
     hits = [
         SearchHit(
             text=p.payload["text"],
-            filename=p.payload["filename"],
+            filename=p.payload.get("filename", collection_name),
             page_numbers=p.payload.get("page_numbers", []),
             score=0.0,  # 此时还没有分数，BM25 检索时才算
             chunk_index=p.payload.get("chunk_index", -1),
@@ -83,25 +83,30 @@ def _load_corpus() -> tuple[list[SearchHit], int]:
     return hits, total
 
 
-def _get_bm25() -> tuple[BM25Okapi | None, list[SearchHit]]:
-    """拿 BM25 索引（带缓存）。语料点数变了自动重建——新文档入库后无需手动刷新。"""
-    corpus, total = _load_corpus()
+def _get_bm25(collection_name: str) -> tuple[BM25Okapi | None, list[SearchHit]]:
+    """拿 BM25 索引（按集合分别缓存）。语料点数变了自动重建。
+
+    评估脚本会用临时集合跑不同参数，所以缓存必须按集合名区分，
+    不能只按点数——不同配置的块数可能碰巧一样。
+    """
+    corpus, total = _load_corpus(collection_name)
     if not corpus:
         return None, []
 
-    if _bm25_cache.get("point_count") == total:
-        return _bm25_cache["bm25"], _bm25_cache["corpus"]
+    cache = _bm25_cache.setdefault(collection_name, {})
+    if cache.get("point_count") == total:
+        return cache["bm25"], cache["corpus"]
 
     tokenized = [_tokenize(hit.text) for hit in corpus]
     bm25 = BM25Okapi(tokenized)
-    _bm25_cache.clear()
-    _bm25_cache.update({"point_count": total, "bm25": bm25, "corpus": corpus})
+    cache.clear()
+    cache.update({"point_count": total, "bm25": bm25, "corpus": corpus})
     return bm25, corpus
 
 
-def _bm25_search(query: str, top_k: int) -> list[SearchHit]:
+def _bm25_search(query: str, top_k: int, collection_name: str = COLLECTION_NAME) -> list[SearchHit]:
     """关键词检索：分词 → BM25 打分 → 取前 top_k。"""
-    bm25, corpus = _get_bm25()
+    bm25, corpus = _get_bm25(collection_name)
     if bm25 is None:
         return []
     tokens = _tokenize(query)
@@ -167,6 +172,7 @@ def hybrid_search(
     query: str,
     embedder,
     top_k: int = 5,
+    collection_name: str = COLLECTION_NAME,
 ) -> list[SearchHit]:
     """混合检索主入口：向量一路 + BM25 一路 → RRF 融合。
 
@@ -177,8 +183,10 @@ def hybrid_search(
     from rag.retriever import search as vector_search
 
     client = get_client()
-    vector_hits = vector_search(client, embedder, query, top_k=CANDIDATE_DEPTH)
-    keyword_hits = _bm25_search(query, top_k=CANDIDATE_DEPTH)
+    vector_hits = vector_search(client, embedder, query, top_k=CANDIDATE_DEPTH,
+                                collection_name=collection_name)
+    keyword_hits = _bm25_search(query, top_k=CANDIDATE_DEPTH,
+                                collection_name=collection_name)
 
     fused = _rrf_fuse([vector_hits, keyword_hits], top_k=top_k)
 

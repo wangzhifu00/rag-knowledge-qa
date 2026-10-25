@@ -108,11 +108,15 @@ def search(
     embedder: Embedder,
     query: str,
     top_k: int = 5,
+    collection_name: str = COLLECTION_NAME,
 ) -> list[SearchHit]:
-    """提问 → 问题向量 → 找最近的 top_k 块。"""
+    """提问 → 问题向量 → 找最近的 top_k 块。
+
+    collection_name 默认用正式集合；评估脚本会传临时集合进来对比。
+    """
     query_vector = embedder.embed_query(query)
     hits = client.query_points(
-        collection_name=COLLECTION_NAME,
+        collection_name=collection_name,
         query=query_vector,
         limit=top_k,
         with_payload=True,
