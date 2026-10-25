@@ -1,5 +1,4 @@
 """ORM 表模型：一个类 = 一张表。
-
 Document 表 = RAG 链路的"档案登记处"：
 上传一个 PDF，先在这里登记一条记录（谁、多大、解析到哪一步），
 然后才是切分(chunker) → 向量化(embedder) → 入 Qdrant。
@@ -10,9 +9,9 @@ from datetime import datetime
 from sqlalchemy import BigInteger, DateTime, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
+#定义模型类   基类+表
 class Base(DeclarativeBase):
     """所有模型的公共基类。Base.metadata 会收集全部表结构，Alembic 靠它做迁移。"""
-
 class Document(Base):
     __tablename__ = "documents"
     # 主键，自增。用 BigInteger 是因为 Postgres 的 serial 到 21 亿就爆了

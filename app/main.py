@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.openapi.docs import get_swagger_ui_html
 from fastapi.staticfiles import StaticFiles
-from app.api.routes import health
+from app.api.routes import chat, documents, health
 from app.config import get_settings
 
 settings = get_settings()  #全局唯一配置
@@ -68,6 +68,8 @@ app.add_middleware(
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
 app.include_router(health.router)
+app.include_router(documents.router)
+app.include_router(chat.router)
 
 
 @app.get("/docs", include_in_schema=False)
