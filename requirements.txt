@@ -17,3 +17,5 @@ sqlalchemy[asyncio]>=2.0.30  # ORM(异步模式),表模型和查询
 asyncpg>=0.29.0              # PostgreSQL 异步驱动(SQLAlchemy 底层用它连库)
 alembic>=1.13.0              # 数据库迁移(表结构的版本管理)
 python-multipart>=0.0.9      # 文件上传表单解析
+rank-bm25>=0.2.2             # BM25 关键词检索算法(纯Python,极轻)
+jieba>=0.42.1                # 中文分词(BM25 需要先切词)

@@ -133,6 +133,7 @@ powershell -ExecutionPolicy Bypass -File scripts\verify.ps1
 - [ ] Embedding 批处理入库脚本
 - [ ] 检索 + Prompt 拼接 + LLM 生成
 - [ ] Web UI (Streamlit / Next.js)
+- [ ] chunk 原文入库 PostgreSQL（chunks 表：doc_id/chunk_index/text/page），PG 作为 source of truth，Qdrant 只存向量+ID，可随时重建
 - [ ] Embedding 切换 BGE-M3(替换 fastembed 默认的 bge-small-zh-v1.5)
 - [ ] 修复 scripts/*.sh 的 CRLF 换行问题(或统一改为 .ps1)
 - [ ] 修复 bootstrap.ps1 / start.sh 中裸 docker compose 未指定 -f docker/docker-compose.yml 的问题

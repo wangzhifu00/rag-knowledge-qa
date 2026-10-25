@@ -47,6 +47,13 @@ class Settings(BaseSettings):
     app_port: int = 8000
     log_level: str = "INFO"
 
+    # ---------- 检索质量门槛（前置拒答） ----------
+    # top1 向量相似度低于该值时直接拒答、不调 LLM：
+    # 既堵住"材料不够模型硬编"的幻觉，又省 token。
+    # 定值依据：语料内正例 top1≈0.63，库外问题≈0.40，取中间偏保守；
+    # 评估阶段(第⑦步)用 8 题标定后再校准。可用环境变量 RETRIEVAL_MIN_SCORE 覆盖。
+    retrieval_min_score: float = 0.45
+
     #把零散字段拼成 psycopg 要的连接串。  psycopg 是 Python 连接 PostgreSQL 数据库最主流的驱动库
     # @property 表示调用时不用加括号：settings.postgres_dsn。
     @property

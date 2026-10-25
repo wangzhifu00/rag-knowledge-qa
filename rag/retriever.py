@@ -31,6 +31,12 @@ class SearchHit:
     filename: str
     page_numbers: list[int]
     score: float
+    # chunk 在文件内的序号，配合 filename 可唯一定位一个 chunk（当身份用）。
+    # 有些文档代码块跨页重复、前几十字一模一样，所以不能靠原文片段识别。
+    chunk_index: int = -1
+    # 向量路的原始相似度（RRF 融合后的 score 是名次分，不能当相似度用）。
+    # 拒答门槛判断的就是这个字段。纯向量检索时它 == score。
+    vector_score: float | None = None
 
 
 @lru_cache
@@ -118,6 +124,18 @@ def search(
             filename=p.payload["filename"],
             page_numbers=p.payload.get("page_numbers", []),
             score=p.score,
+            chunk_index=p.payload.get("chunk_index", -1),
+            vector_score=p.score,
         )
         for p in hits
     ]
+
+
+def best_vector_score(hits: list[SearchHit]) -> float:
+    """这批结果里最高的向量原始相似度（拒答门槛就用它判断）。
+
+    混合检索下部分 hit 只来自 BM25 路、没有向量分（None），跳过；
+    全是 None 说明向量路空手而归，返回 0——必拒。
+    """
+    values = [h.vector_score for h in hits if h.vector_score is not None]
+    return max(values) if values else 0.0
