@@ -1,5 +1,4 @@
 """Alembic 迁移环境。
-
 关键点：
 1. 从 app.config 读数据库连接（单一事实来源，不在 alembic.ini 里重复写）
 2. 用异步引擎跑迁移（和运行时保持一致，都走 asyncpg）
@@ -9,7 +8,6 @@
 
 import asyncio
 from logging.config import fileConfig
-
 from alembic import context
 from sqlalchemy import pool
 from sqlalchemy.engine import Connection
@@ -32,7 +30,6 @@ target_metadata = Base.metadata
 settings = get_settings()
 config.set_main_option("sqlalchemy.url", settings.postgres_dsn_async)
 
-
 def run_migrations_offline() -> None:
     """离线模式：只生成 SQL 不连库（alembic --sql 时用）。"""
     url = config.get_main_option("sqlalchemy.url")
@@ -44,7 +41,6 @@ def run_migrations_offline() -> None:
     )
     with context.begin_transaction():
         context.run_migrations()
-
 
 def do_run_migrations(connection: Connection) -> None:
     """在真实连接上执行迁移（被下面的 run_sync 回调）。"""
