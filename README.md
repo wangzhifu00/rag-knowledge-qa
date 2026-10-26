@@ -1,142 +1,215 @@
-# RAG Knowledge QA
+# RAG 知识库问答（rag-knowledge-qa）
 
-基于 **检索增强生成 (Retrieval-Augmented Generation)** 的知识问答系统骨架。
+基于 **检索增强生成（RAG）** 的企业知识库问答系统：上传 PDF，即可用自然语言提问，
+回答**只基于文档内容**并带**可点击的引用溯源**，检索不到就明确拒答，不编造。
 
-## 技术栈
+技术栈：FastAPI + Qdrant + PostgreSQL + Redis + BGE（embedding/reranker）+ 原生 JS 前端。
 
-| 组件 | 选型 | 用途 |
+![界面](docs/ui.png)
+
+> 截图里的三个能力：中间是流式回答与 `[n]` 引用标注；右侧是命中的原文片段与相关度分数；
+> 左侧是知识库文档管理与三种检索模式切换（黄色气泡为"知识库中没有该内容"的拒答）。
+
+---
+
+## 功能
+
+- **PDF 问答**：上传 → 后台解析/清洗/切分/向量化入库，状态实时可见
+- **混合检索**：BM25（jieba 中文分词）+ 向量双路召回，RRF 融合名次，再用交叉编码器精排
+- **流式输出**：SSE 打字机效果，来源先于正文到达
+- **引用溯源**：回答中的 `[1][2]` 可点击，联动高亮右侧对应原文
+- **拒答机制**：分数门槛粗筛 + LLM prompt 细判，双保险；拒答不消耗生成调用
+- **三种检索模式**可切换对比：`vector` / `hybrid` / `hybrid_rerank`
+- **评估体系**：检索层命中率 + RAGAS 答案层质量，优化前后全程有数字背书
+
+## 架构
+
+```mermaid
+flowchart LR
+    A[PDF 上传] --> B[解析 pypdf]
+    B --> C[清洗: 去页眉页脚噪声行]
+    C --> D[切分 300字/重叠30]
+    D --> E[BGE 向量化]
+    E --> F[(Qdrant)]
+    D -. 原文块 .-> G[BM25 内存索引 jieba]
+
+    Q[用户提问] --> R{检索模式}
+    R -->|vector| S[向量检索]
+    R -->|hybrid / hybrid_rerank| T[向量 + BM25 双路 top20]
+    T --> U[RRF 融合 k=60]
+    U --> V{rerank?}
+    V -->|是| W[交叉编码器精排 top5<br/>bge-reranker-v2-m3]
+    V -->|否| X[top5]
+    W --> X
+    S --> X
+    X --> Y{分数低于门槛?}
+    Y -->|是| Z[拒答: 不调用 LLM]
+    Y -->|否| AA[组装 Prompt: 材料 + 问题]
+    AA --> AB[LLM 生成<br/>带引用标注]
+    AB --> AC[SSE: meta → sources → token×N → done]
+```
+
+检索采用工业标准的**两段式架构**：快的海选（向量+BM25 取 top20）→ 准的精排（交叉编码器挑 top5）。
+
+## 评估
+
+评估集：10 题 golden set（8 题有标准答案 + 2 题应拒答），切分参数 300/30。
+
+### 第一层：检索命中率（scripts/eval_retrieval.py，免费秒出）
+
+| 指标 | 纯向量 | 混合(RRF) | 混合+精排 |
+|------|:-----:|:---------:|:---------:|
+| hit@1 | 38% | 38% | **62%** |
+| hit@5 | 62% | 75% | **88%** |
+| MRR | 0.458 | 0.521 | **0.719** |
+
+精排把 MRR 从 0.52 拉到 0.72：约 1/3 的问题从"正确答案在第 3 名"变成"第 1 条就对"。
+
+### 第二层：答案质量（RAGAS，LLM 当裁判）
+
+| 指标 | 纯向量 | 混合(RRF) |
+|------|:-----:|:---------:|
+| faithfulness（忠实度/反幻觉） | 0.762 | **0.791** |
+| answer_relevancy（切题度） | **0.855** | 0.847 |
+| context_precision（检索精度） | 0.583 | **0.607** |
+| context_recall（检索召回） | 0.571 | **0.643** |
+
+两层评估互相印证：混合检索在 4 项中赢 3 项，与检索命中率的结论一致。
+
+### 性能（RTX 3050 Ti 4GB，本地推理）
+
+| 阶段 | CPU 推理 | GPU 推理 |
+|------|:-------:|:-------:|
+| 检索（冷启动，一次性） | 28.5s | 25.3s |
+| 检索（热态，每次） | 4~12s | **0.49s** |
+| 生成（流式） | 3~8s | 3~8s |
+
+## 快速开始
+
+### 0. 前置要求
+
+- Docker Desktop（PostgreSQL / Redis / Qdrant 跑在容器里）
+- Python 3.11+（开发环境为 3.13）
+- 一个 OpenAI 协议兼容的 LLM API Key（DeepSeek / Qwen / GLM 均可）
+- （可选）NVIDIA GPU + CUDA 版 PyTorch，精排提速约 8 倍；CPU 也能跑
+
+### 1. 起依赖服务
+
+```bash
+docker compose -f docker/docker-compose.yml up -d
+```
+
+### 2. 配置并安装依赖
+
+```bash
+cp .env.example .env        # 填入 LLM API Key
+pip install -r requirements.txt
+```
+
+### 3. 入库文档
+
+```bash
+python scripts/ingest.py data/langchain_intro.pdf
+```
+
+或者直接在网页里上传 PDF（后台异步入库，状态自动刷新）。
+
+### 4. 启动并访问
+
+```bash
+uvicorn app.main:app --reload --port 8000
+```
+
+| 入口 | 地址 |
+|------|------|
+| **网页问答界面** | http://127.0.0.1:8000/ui/ |
+| API 文档（Swagger） | http://127.0.0.1:8000/docs |
+| 健康检查 | http://127.0.0.1:8000/health |
+
+### 5. 复现评估（可选）
+
+```bash
+python scripts/eval_retrieval.py            # 三种检索模式对比
+python scripts/eval_ragas.py                # RAGAS 答案质量(会消耗 LLM API)
+```
+
+## API
+
+| 方法 | 路径 | 说明 |
 |------|------|------|
-| 向量数据库 | **Qdrant** | 文档向量存储与相似度检索 |
-| 元数据库 | **PostgreSQL 16** | 用户、会话、文档元信息 |
-| 缓存/队列 | **Redis 7** | 检索结果缓存、异步任务队列 |
-| LLM | DeepSeek / OpenAI / Qwen / GLM | 答案生成（可切换） |
-| Embedding | fastembed（本地 ONNX，当前 `BAAI/bge-small-zh-v1.5`，计划切换 BGE-M3） | 文档向量化 |
-| 可视化 | Adminer | Postgres Web 管理 |
+| POST | `/chat` | 一次性返回完整 JSON（脚本/评估用） |
+| POST | `/chat/stream` | SSE 流式返回（前端用），事件序列 `meta → sources → token×N → done` |
+| POST | `/documents/upload` | 上传 PDF，后台异步入库 |
+| GET | `/documents` | 文档列表与入库状态 |
+| GET | `/health` | PG / Redis / Qdrant 三组件健康检查 |
+
+请求体示例：
+
+```json
+{ "question": "如何用LangChain做RAG", "top_k": 5, "mode": "hybrid_rerank" }
+```
+
+## 技术选型与理由
+
+| 决策 | 选择 | 为什么 |
+|------|------|--------|
+| 前端 | 原生 HTML/CSS/JS | 只有一个页面、两个状态变量，React 的组件复用与状态管理都用不上；引构建链只会把启动从 2 条命令变 6 条。省下的复杂度换成了能讲清原理的 SSE 解析、防 XSS 渲染 |
+| 流式 | SSE 而非 WebSocket | 单向推送场景，一个不关闭的 HTTP 响应就够，不需要 WS 的连接管理；且用 `fetch` 读流（而非 EventSource）才能带 JSON body |
+| 检索 | 混合 + 精排两段式 | 实测：纯向量 hit@5 62% → 混合 75% → 精排 88%。BM25 补关键词命中，交叉编码器补语义精排 |
+| 切分 | 300 字 / 重叠 30 | 消融实验胜出：hit@1 25%→38%，MRR 0.338→0.458 |
+| 评估 | 两层而不是 AutoRAG | 10 题 golden set 撑不起网格搜索（会过拟合测试集），借 AutoRAG 的思想（海选用便宜指标、决赛才上 LLM 裁判）而不引框架 |
+| Reranker | bge-reranker-v2-m3 | 必须多语言：中文提问 × 英文语料。bge-reranker-base 实测跨语言打分全贴 0.500（sigmoid 零点 = 无判断力），排序等于随机 |
+
+## 踩坑记录（节选）
+
+完整记录见开发笔记，以下是对后来者最有用的几条：
+
+1. **torch 装成 CPU 版**——`torch.cuda.is_available()` 返回 False 时一切推理都在 CPU 硬算；
+   同样的 20 对候选，CPU 4s vs GPU 0.42s。装 CUDA 版只需换后缀：`torch==x.y.z+cu132`。
+2. **RRF 融合的身份键**——用"原文前 80 字符"做去重键时，跨页重复的代码块会被当成
+   同一条，分数重复累加导致排名虚高。改用 `(filename, chunk_index)` 作为唯一身份。
+3. **相关性 ≠ 可回答性**——reranker 只能判断"这段和问题有关"，判断不了"这段能否
+   回答问题"。文档通篇讲 LangChain 时，"什么是LangChain"照样拿高分。因此拒答必须
+   双保险：分数门槛粗筛 + LLM prompt 细判，实测两层各自独立生效。
+4. **切分参数的隐式默认值**——API 上传路径和脚本入库路径用了不同的默认 chunk 参数，
+   两条入库路产出不一致。修复方式是把根默认值收口到一处。
+5. **静态目录挂载顺序**——`StaticFiles` 挂到 `/` 会成为兜底路由吞掉所有 API，
+   必须挂子路径（本项目挂 `/ui`）。
+
+## 已知限制与后续计划
+
+- [ ] chunks 原文入 PostgreSQL（source of truth），Qdrant 只存向量+ID，可随时重建
+- [ ] Embedding 换 BGE-M3 对比（bge-small-zh 跨语言弱：中文"智能体"查不到英文"agent"）
+- [ ] 拒答的 prompt 层细判增强（材料"只提到概念但没给定义/步骤"时也应拒答）
+- [ ] 评估集扩充：10 题只能验证方向，30~100 题才能得到稳定结论
+- [ ] 修复 `scripts/*.sh` 的 CRLF 换行（Windows 用 `verify.ps1` 代替）
+- [ ] 冷启动预热：lifespan 中预加载 embedding/reranker 模型（当前首问多等约 20s）
 
 ## 目录结构
 
 ```
 rag-knowledge-qa/
-├── app/                    # FastAPI 后端(骨架待实现)
-├── rag/                    # RAG 核心逻辑(解析、切分、检索、生成,待实现)
-├── tests/                  # 测试
-├── eval/                   # 评估数据集和脚本
-├── docker/
-│   └── docker-compose.yml  # 一键拉起 Postgres + Redis + Qdrant + Adminer
-├── data/                   # 测试文档(如 langchain_intro.pdf)
-├── docs/
-│   ├── ARCHITECTURE.md     # 架构说明(后续补充)
-│   └── setup-retrospective.html
-├── scripts/
-│   ├── bootstrap.ps1       # 一键引导(Windows)
-│   ├── start.sh / stop.sh  # 启动/停止(有 CRLF 问题,建议用 .ps1)
-│   └── verify.sh / verify.ps1  # 健康检查(Windows 用 verify.ps1)
-├── requirements.txt        # Python 依赖
-├── .env.example            # 环境变量模板(复制为 .env 并填入 API Key)
-└── README.md
+├── app/
+│   ├── main.py               # FastAPI 入口(lifespan/CORS/静态挂载)
+│   ├── config.py             # 全局配置(pydantic-settings)
+│   ├── api/routes/           # chat(问答+SSE流式) / documents / health
+│   └── db/                   # SQLAlchemy 异步 ORM + Alembic 迁移
+├── rag/                      # RAG 核心
+│   ├── parser.py             # PDF 解析
+│   ├── cleaner.py            # 噪声行清洗
+│   ├── chunker.py            # 切分(300/30)
+│   ├── embedder.py           # 向量化(fastembed/bge-small-zh)
+│   ├── retriever.py          # Qdrant 向量检索
+│   ├── hybrid.py             # BM25 + RRF 融合
+│   ├── reranker.py           # 交叉编码器精排(bge-reranker-v2-m3)
+│   └── generator.py          # Prompt 组装 + 同步/流式生成
+├── frontend/                 # 原生单页界面(index.html/style.css/app.js)
+├── scripts/                  # ingest / eval_retrieval / eval_ragas / ask
+├── docker/docker-compose.yml # PG + Redis + Qdrant + Adminer
+├── data/                     # 示例文档
+├── docs/                     # 架构说明 + 界面截图
+└── eval/                     # 评估数据
 ```
-
-## 快速开始(Windows)
-
-### 0. 一键引导(几乎全自动)
-
-```powershell
-# 在项目根目录,右键 PowerShell 以管理员身份运行
-cd D:\WorkBuddy_Workspace\2026-09-14-21-55-49\rag-knowledge-qa
-powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
-```
-
-它会自动:
-1. 检测管理员权限
-2. 没装 Docker 就用 winget 装 Docker Desktop
-3. 没建 `.env` 就从模板创建并提示你填 API Key
-4. `docker compose pull` + `up -d`
-5. 跑健康检查
-
-### 1. 手动路径
-
-如果你想自己控制每一步:
-
-#### 1.1 装 Docker Desktop
-
-> Docker Desktop 是唯一需要手动装的组件(沙箱限制: GUI 安装包 + 需管理员)。
-
-```powershell
-# 方式 A: winget 一行(推荐)
-winget install --id Docker.DockerDesktop -e --source winget
-
-# 方式 B: 官网下载
-# https://www.docker.com/products/docker-desktop/
-# 安装时勾选 "Use WSL 2 instead of Hyper-V"(Windows 11 默认)
-```
-
-装完**重启电脑**,确认 Docker Desktop 启动并跑出鲸鱼图标,然后 `docker --version` 验证。
-
-#### 1.2 配环境变量
-
-```powershell
-Copy-Item .env.example .env
-notepad .env    # 填入至少一个 LLM API Key
-```
-
-#### 1.3 Python 虚拟环境
-
-```powershell
-python -m venv .venv
-.\.venv\Scripts\Activate.ps1
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-```
-
-> 若 PowerShell 提示"禁止运行脚本"，先执行一次：
-> `Set-ExecutionPolicy -Scope CurrentUser RemoteSigned`
-
-#### 1.4 启动
-
-```powershell
-# 一键引导(推荐)
-powershell -ExecutionPolicy Bypass -File scripts\bootstrap.ps1
-
-# 或手动(compose 文件在 docker/ 子目录)
-docker compose -f docker/docker-compose.yml up -d
-```
-
-#### 1.5 验证
-
-```powershell
-powershell -ExecutionPolicy Bypass -File scripts\verify.ps1
-```
-
-> Windows 下请用 `.ps1` 版本；`scripts/*.sh` 目前是 CRLF 换行，Git Bash 直接跑会报 `$'\r'` 错误（待修复）。
-
-### 2. 访问管理界面
-
-| 服务 | 地址 | 凭据 |
-|------|------|------|
-| Adminer (Postgres UI) | <http://localhost:8080> | 用户/密码/库名见 .env |
-| Qdrant Dashboard | <http://localhost:6333/dashboard> | 无鉴权(默认) |
-
-## 端口一览
-
-| 端口 | 服务 |
-|------|------|
-| 5432 | PostgreSQL |
-| 6379 | Redis |
-| 6333 | Qdrant REST |
-| 6334 | Qdrant gRPC |
-| 8080 | Adminer (可选) |
-
-## 下一步
-
-- [ ] 接入 LangChain / LlamaIndex / 自研检索链路
-- [ ] 文档加载与分块(loader + splitter)
-- [ ] Embedding 批处理入库脚本
-- [ ] 检索 + Prompt 拼接 + LLM 生成
-- [ ] Web UI (Streamlit / Next.js)
-- [ ] chunk 原文入库 PostgreSQL（chunks 表：doc_id/chunk_index/text/page），PG 作为 source of truth，Qdrant 只存向量+ID，可随时重建
-- [ ] Embedding 切换 BGE-M3(替换 fastembed 默认的 bge-small-zh-v1.5)
-- [ ] 修复 scripts/*.sh 的 CRLF 换行问题(或统一改为 .ps1)
-- [ ] 修复 bootstrap.ps1 / start.sh 中裸 docker compose 未指定 -f docker/docker-compose.yml 的问题
 
 ## License
 
