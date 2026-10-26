@@ -47,6 +47,12 @@ services:
       # 6.5GB 模型不进镜像：只读挂载宿主机目录。
       # 换模型 = 改宿主机 models/ + 跑 reindex，不用 rebuild 镜像。
       - ../models:/app/models:ro
+      # 用户上传的 PDF 落在宿主机，否则只存在于容器的可写层里，
+      # `up -d --build` 重建容器就没了（PG 里还留着 chunk 原文，问答不受影响，
+      # 但 documents.file_path 会指向不存在的文件，重新解析就废了）。
+      # 挂载点路径要和代码一致：documents.py 里是 Path(__file__).parents[2]
+      # → /app/app/data/uploads，注意多一层 app。
+      - ../app/data/uploads:/app/app/data/uploads
 
     depends_on:
       postgres:

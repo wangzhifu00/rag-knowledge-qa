@@ -35,6 +35,13 @@ scripts/eval_*.py
 scripts/gen_evalset.py
 stream_tmp.txt
 
+# --- 用户上传的文件不打进镜像 ---
+# 两个理由：① 上传的 PDF 可能含个人信息，不该固化进镜像层
+# ② 打进镜像后它是"构建时的快照"，容器里新传的文件在 up -d 重建时会丢。
+# 由 compose 把宿主机 app/data/uploads 挂进来（见 docker-compose.yml）。
+# 注意只排这一个子目录 —— 根目录的 data/ 要留着（示例文档，ingest 要用）。
+app/data/uploads/
+
 # --- 其它杂项 ---
 *.md
 !README.md
