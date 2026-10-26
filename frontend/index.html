@@ -1,0 +1,90 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>RAG 知识库问答</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="logo" aria-hidden="true"></span>
+      <div class="brand-text">
+        <h1>RAG 知识库问答</h1>
+        <p>Qdrant · BGE-M3 · 混合检索 + 交叉编码器精排</p>
+      </div>
+    </div>
+    <div class="topbar-right">
+      <span id="health" class="pill">检测中…</span>
+      <button id="clearBtn" class="ghost-btn" type="button">清空对话</button>
+      <a class="ghost-btn" href="/docs" target="_blank" rel="noreferrer">API 文档</a>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- ── 左栏：配置 + 知识库 ───────────────────────────────── -->
+    <aside class="panel sidebar">
+      <section class="block">
+        <h2>检索模式</h2>
+        <select id="mode">
+          <option value="hybrid_rerank">精排 · hybrid + rerank</option>
+          <option value="hybrid">混合 · hybrid</option>
+          <option value="vector">纯向量 · vector</option>
+        </select>
+        <p class="hint" id="modeHint">检索先粗筛 20 条，再用交叉编码器精排出 5 条。最准，多花 1~2 秒。</p>
+      </section>
+
+      <section class="block grow">
+        <h2>知识库文档 <span id="docCount" class="count">0</span></h2>
+        <div id="docList" class="doc-list">
+          <p class="empty">加载中…</p>
+        </div>
+      </section>
+
+      <section class="block">
+        <h2>上传 PDF</h2>
+        <label class="upload" for="file">
+          <input type="file" id="file" accept="application/pdf" hidden />
+          <span>选择 PDF 文件</span>
+        </label>
+        <p class="hint" id="uploadHint">上传后后台解析入库，状态会自动刷新。</p>
+      </section>
+    </aside>
+
+    <!-- ── 中栏：对话 ─────────────────────────────────────────── -->
+    <section class="chat">
+      <div id="messages" class="messages">
+        <div class="welcome">
+          <h3>问点什么？</h3>
+          <p>回答只基于知识库里的文档，检索不到会直接说"无法回答"，不会编。</p>
+          <div class="samples">
+            <button class="sample" data-q="如何用LangChain做RAG">如何用LangChain做RAG</button>
+            <button class="sample" data-q="文本切分器是什么">文本切分器是什么</button>
+            <button class="sample" data-q="支持哪些向量数据库">支持哪些向量数据库</button>
+            <button class="sample" data-q="文档切好块之后存到哪">文档切好块之后存到哪</button>
+            <button class="sample sample-refuse" data-q="报销流程要走几步">报销流程要走几步（试试拒答）</button>
+          </div>
+        </div>
+      </div>
+
+      <form id="composer" class="composer">
+        <textarea id="input" rows="1" placeholder="输入问题…（Enter 发送，Shift + Enter 换行）"></textarea>
+        <button id="send" type="submit">
+          <span>发送</span>
+        </button>
+      </form>
+    </section>
+
+    <!-- ── 右栏：来源 ─────────────────────────────────────────── -->
+    <aside class="panel sources">
+      <h2>检索来源 <span id="srcCount" class="count">0</span></h2>
+      <div id="sourceList" class="source-list">
+        <p class="empty">提问后这里显示命中的原文片段，回答里的 [1][2] 可以点。</p>
+      </div>
+    </aside>
+  </main>
+
+  <script src="app.js"></script>
+</body>
+</html>

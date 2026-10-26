@@ -1,22 +1,30 @@
 """问答路由：RAG 问答线包成 API。
 
-POST /chat  {"question": "...", "top_k": 5}
-返回结构化 JSON：answer + sources 数组（文件名/页码/相似度），
-前端渲染"点击引用跳原文"靠的就是这个结构。
+两个接口，一套检索逻辑：
+  POST /chat         一次性返回完整 JSON（脚本 / 评估脚本 / 其他系统调用）
+  POST /chat/stream  SSE 流式返回（网页前端用，打字机效果）
 
-这里故意用同步 def 路由：FastAPI 会自动把同步路由丢进线程池跑，
+为什么流式用 SSE 而不是 WebSocket：
+这条链路是"客户端问一次、服务端往下推"，单向、没心跳、没重连需求。
+SSE 本质就是一个不关闭的 HTTP 响应，浏览器用 fetch 读 body 流就能消费，
+不用引 WebSocket 那套连接管理。反过来，如果要做多人协作/双向推送才上 WS。
+
+顺带保留了原同步路由的注释：同步 def 路由 FastAPI 会自动丢线程池，
 不会阻塞事件循环——比手动 asyncio.to_thread 更省事。
 """
 
+import asyncio
+import json
 import time
 
 from fastapi import APIRouter
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from app.config import get_settings
 from rag.embedder import get_embedder
-from rag.generator import generate_answer
-from rag.retriever import best_vector_score, get_client, search
+from rag.generator import generate_answer, stream_answer
+from rag.retriever import SearchHit, best_vector_score, get_client, search
 
 settings = get_settings()
 
@@ -51,46 +59,69 @@ class ChatResponse(BaseModel):
     question: str
     mode: str
     refused: bool = False          # True=触发了检索质量门槛拒答
-    top_vector_score: float = 0.0  # top1 向量原始相似度（调试/评估用）
+    top_vector_score: float = 0.0  # top1 分数（调试/评估用）
     elapsed: dict
 
 
+# ---------------------------------------------------------------- 共享逻辑
+# 两个接口都要"检索 + 判拒答 + 组来源"，抽出来避免复制粘贴两遍。
+# 以后改检索策略只动这一个函数，两个接口同时生效。
+
+def _retrieve(question: str, top_k: int, mode: str) -> tuple[list[SearchHit], float]:
+    """检索并返回 (hits, 用于拒答判断的 top 分数)。
+
+    纯同步阻塞函数（embedding / jieba / reranker 全是 CPU 计算），
+    调用方负责丢进线程池，别在事件循环里直接跑。
+    """
+    embedder = get_embedder()
+
+    if mode in ("hybrid", "hybrid_rerank"):
+        from rag.hybrid import hybrid_search, warmup_jieba
+
+        warmup_jieba()  # 首次分词要加载词典，预热一下免得第一问特别慢
+        hits = hybrid_search(
+            question, embedder, top_k=top_k, rerank=(mode == "hybrid_rerank")
+        )
+    else:
+        client = get_client()
+        hits = search(client, embedder, question, top_k=top_k)
+
+    # 拒答打分模式——rerank 模式用 reranker 概率(区分度高，是主门槛)，
+    # 其余模式退回向量相似度门槛(区分度不足，仅兜底)。见 _refusal_threshold。
+    if mode == "hybrid_rerank":
+        return hits, max((h.score for h in hits), default=0.0)
+    return hits, best_vector_score(hits)
+
+
+def _refusal_threshold(mode: str) -> float:
+    if mode == "hybrid_rerank":
+        return settings.rerank_min_score
+    return settings.retrieval_min_score
+
+
+def _to_sources(hits: list[SearchHit]) -> list[SourceOut]:
+    return [
+        SourceOut(
+            index=i,
+            filename=h.filename,
+            pages=h.page_numbers,
+            score=round(h.score, 4),
+            preview=h.text[:160].replace("\n", " "),
+        )
+        for i, h in enumerate(hits, start=1)
+    ]
+
+
+# ---------------------------------------------------------------- 同步接口
 @router.post("/chat", response_model=ChatResponse, summary="知识库问答（RAG）")
 def chat(req: ChatRequest) -> ChatResponse:
     t0 = time.time()
-
-    # 检索（同步阻塞，线程池里跑）。默认 hybrid_rerank（精度最高）
-    embedder = get_embedder()
-    if req.mode == "hybrid_rerank":
-        from rag.hybrid import hybrid_search, warmup_jieba
-
-        warmup_jieba()
-        hits = hybrid_search(req.question, embedder, top_k=req.top_k, rerank=True)
-    elif req.mode == "hybrid":
-        from rag.hybrid import hybrid_search, warmup_jieba
-
-        warmup_jieba()
-        hits = hybrid_search(req.question, embedder, top_k=req.top_k)
-    else:
-        client = get_client()
-        hits = search(client, embedder, req.question, top_k=req.top_k)
+    hits, top_score = _retrieve(req.question, req.top_k, req.mode)
     t_search = time.time() - t0
 
-    # 前置拒答：门槛分模式——rerank 模式用 reranker 概率(区分度高，
-    # 是主门槛)，其余模式退回向量相似度门槛(区分度不足,仅兜底)。
-    # 背景：曾出现"库里没有的内容，模型自己编一段还标了假引用"——
+    # 前置拒答：曾出现"库里没有的内容，模型自己编一段还标了假引用"——
     # 与其让 LLM 硬编，不如在检索层就承认"库里没有"。
-    if req.mode == "hybrid_rerank":
-        top_score = max((h.score for h in hits), default=0.0)
-        threshold = settings.rerank_min_score
-    else:
-        top_score = best_vector_score(hits)
-        threshold = settings.retrieval_min_score
-    elapsed_partial = {
-        "search_seconds": round(t_search, 2),
-        "total_seconds": round(time.time() - t0, 2),
-    }
-    if top_score < threshold:
+    if top_score < _refusal_threshold(req.mode):
         return ChatResponse(
             answer=REFUSAL_ANSWER,
             sources=[],
@@ -98,28 +129,19 @@ def chat(req: ChatRequest) -> ChatResponse:
             mode=req.mode,
             refused=True,
             top_vector_score=round(top_score, 4),
-            elapsed=elapsed_partial,
+            elapsed={
+                "search_seconds": round(t_search, 2),
+                "total_seconds": round(time.time() - t0, 2),
+            },
         )
 
-    # 生成
     t1 = time.time()
     answer = generate_answer(req.question, hits)
     t_generate = time.time() - t1
 
-    sources = [
-        SourceOut(
-            index=i,
-            filename=h.filename,
-            pages=h.page_numbers,
-            score=round(h.score, 4),
-            preview=h.text[:80].replace("\n", " "),
-        )
-        for i, h in enumerate(hits, start=1)
-    ]
-
     return ChatResponse(
         answer=answer,
-        sources=sources,
+        sources=_to_sources(hits),
         question=req.question,
         mode=req.mode,
         refused=False,
@@ -128,5 +150,98 @@ def chat(req: ChatRequest) -> ChatResponse:
             "search_seconds": round(t_search, 2),
             "generate_seconds": round(t_generate, 2),
             "total_seconds": round(time.time() - t0, 2),
+        },
+    )
+
+
+# ---------------------------------------------------------------- 流式接口
+def _sse(payload: dict) -> str:
+    """SSE 协议格式：`data: <json>` + 两个换行。
+
+    两个换行是消息分隔符（不是排版习惯），前端按 "\\n\\n" 切包。
+    ensure_ascii=False 让中文原样输出，不然全是 \\uXXXX，调试时看不懂。
+    """
+    return f"data: {json.dumps(payload, ensure_ascii=False)}\n\n"
+
+
+@router.post("/chat/stream", summary="知识库问答（SSE 流式）")
+async def chat_stream(req: ChatRequest) -> StreamingResponse:
+    """事件序列（前端按 type 分发）：
+
+    meta    开场，带上检索分数和门槛，前端可以显示"检索耗时 0.8s"
+    sources 来源列表，先推——这样用户看字的同时右边来源已经在了
+    token   增量文本，重复 N 次
+    done    收尾，带各阶段耗时
+    error   出错（检索或生成），前端显示红条
+
+    拒答时不出 token 流，直接把整句话当一个 token 推完，前端逻辑统一。
+    """
+
+    async def event_gen():
+        t0 = time.time()
+
+        # 检索丢线程池：embedding + reranker 是 CPU 密集的，
+        # 直接在事件循环里算会把整条流卡住（这时候别的请求全在排队）。
+        try:
+            hits, top_score = await asyncio.to_thread(
+                _retrieve, req.question, req.top_k, req.mode
+            )
+        except Exception as exc:  # noqa: BLE001
+            yield _sse({"type": "error", "message": f"检索失败：{exc}"})
+            return
+
+        t_search = time.time() - t0
+        threshold = _refusal_threshold(req.mode)
+
+        yield _sse({
+            "type": "meta",
+            "question": req.question,
+            "mode": req.mode,
+            "top_score": round(top_score, 4),
+            "threshold": threshold,
+            "search_seconds": round(t_search, 2),
+        })
+
+        if top_score < threshold:
+            elapsed = {
+                "search_seconds": round(t_search, 2),
+                "total_seconds": round(time.time() - t0, 2),
+            }
+            yield _sse({"type": "sources", "sources": []})
+            yield _sse({"type": "token", "text": REFUSAL_ANSWER})
+            yield _sse({"type": "done", "refused": True, "elapsed": elapsed})
+            return
+
+        yield _sse({
+            "type": "sources",
+            "sources": [s.model_dump() for s in _to_sources(hits)],
+        })
+
+        t1 = time.time()
+        try:
+            async for piece in stream_answer(req.question, hits):
+                yield _sse({"type": "token", "text": piece})
+        except Exception as exc:  # noqa: BLE001
+            yield _sse({"type": "error", "message": f"生成失败：{exc}"})
+            return
+
+        yield _sse({
+            "type": "done",
+            "refused": False,
+            "elapsed": {
+                "search_seconds": round(t_search, 2),
+                "generate_seconds": round(time.time() - t1, 2),
+                "total_seconds": round(time.time() - t0, 2),
+            },
+        })
+
+    return StreamingResponse(
+        event_gen(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            # nginx 默认会把响应攒满 buffer 再发，流式就被"憋"成一整块。
+            # 本地直连 uvicorn 不受影响，这条是给以后上 nginx 留的。
+            "X-Accel-Buffering": "no",
         },
     )

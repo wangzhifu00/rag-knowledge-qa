@@ -55,7 +55,9 @@ class Reranker:
         if not hits:
             return []
         pairs = [(query, h.text) for h in hits]
-        logits = self._model.predict(pairs)
+        # batch_size=8：默认一次喂 32 对，3050 Ti 只有 4GB 显存容易 OOM；
+        # 小批量对 CPU 速度影响也很小
+        logits = self._model.predict(pairs, batch_size=8)
         probs = 1.0 / (1.0 + np.exp(-np.asarray(logits, dtype=float)))
 
         ranked = sorted(zip(hits, probs), key=lambda x: x[1], reverse=True)[:top_k]

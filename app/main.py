@@ -21,6 +21,7 @@ settings = get_settings()  #全局唯一配置
 #用绝对路径
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+FRONTEND_DIR = BASE_DIR.parent / "frontend"   # 项目根/frontend，网页聊天界面
 
 
 logging.basicConfig(
@@ -67,6 +68,12 @@ app.add_middleware(
 # mount 挂静态文件（Swagger 的 JS/CSS）；include_router 把另一个文件里的路由"装"进主应用 —— 这样业务代码可以按模块拆文件，不用全堆在 main.py。
 app.mount("/static", StaticFiles(directory=STATIC_DIR), name="static")
 
+# 网页聊天界面。注意挂的是 /ui 而不是 "/"：
+# StaticFiles 挂到根路径会变成一个"什么都匹配"的兜底路由，
+# 排在它后面的 /health、/chat 全被它吃掉返回 404 或 index.html。
+# html=True 让 /ui/ 自动返回 index.html，静态文件里的相对路径也按 /ui/ 解析。
+app.mount("/ui", StaticFiles(directory=FRONTEND_DIR, html=True), name="ui")
+
 app.include_router(health.router)
 app.include_router(documents.router)
 app.include_router(chat.router)
@@ -107,4 +114,5 @@ async def root() -> dict:
         "version": app.version,
         "docs": "/docs",
         "health": "/health",
+        "ui": "/ui/",   # 网页聊天界面
     }

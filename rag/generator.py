@@ -5,7 +5,7 @@ RAG 的本质在这里：用检索到的材料"限制"LLM 的发挥范围——
 引用格式 [1][2]：逼模型对齐材料，用户也能顺着编号核对原文。
 """
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 from app.config import get_settings
 from rag.retriever import SearchHit
@@ -28,6 +28,19 @@ def get_llm() -> OpenAI:
     换供应商只改 base_url 和 key，业务代码零改动。
     """
     return OpenAI(
+        api_key=settings.llm_api_key,
+        base_url=settings.llm_base_url,
+    )
+
+
+def get_async_llm() -> AsyncOpenAI:
+    """异步客户端，流式输出(SSE)专用。
+
+    为什么必须用异步版：同步客户端在 async 生成器里一旦发起请求，
+    会把整个事件循环卡住——浏览器那边就是一个字都不吐，直到全文生成完。
+    异步版可以 async for 逐块拿到增量文本，边收边推。
+    """
+    return AsyncOpenAI(
         api_key=settings.llm_api_key,
         base_url=settings.llm_base_url,
     )
@@ -58,6 +71,40 @@ def generate_answer(question: str, hits: list[SearchHit]) -> str:
         temperature=0.1,  # 知识库问答要"稳"，温度调低减少发挥
     )
     return resp.choices[0].message.content or ""
+
+
+async def stream_answer(question: str, hits: list[SearchHit]):
+    """流式版生成：一段一段吐字，网页那边看起来才像"在说话"。
+
+    和 generate_answer 的区别只有两处：
+    1. 客户端换成 AsyncOpenAI（同步版会卡死事件循环）
+    2. 传 stream=True，然后 async for 拿增量 chunk.choices[0].delta.content
+
+    最后要 return，不是普通的返回值——这是异步生成器（async yield），
+    调用方用 `async for piece in stream_answer(...)` 消费。
+    """
+    if not hits:
+        yield "知识库中没有检索到相关内容，无法回答。"
+        return
+
+    client = get_async_llm()
+    stream = await client.chat.completions.create(
+        model=settings.llm_model,
+        messages=[
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": build_prompt(question, hits)},
+        ],
+        temperature=0.1,
+        stream=True,
+    )
+
+    async for chunk in stream:
+        # 有些 chunk 只带 role/finish_reason，choices 里没有 delta 内容，跳过
+        if not chunk.choices:
+            continue
+        delta = chunk.choices[0].delta.content
+        if delta:
+            yield delta
 
 
 def format_sources(hits: list[SearchHit]) -> str:
