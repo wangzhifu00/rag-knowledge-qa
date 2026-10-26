@@ -69,6 +69,7 @@ class Reranker:
                 score=float(p),  # ← rerank 相关度概率，拒答门槛看它
                 chunk_index=h.chunk_index,
                 vector_score=h.vector_score,
+                chunk_id=h.chunk_id,   # 身份要跟着走，否则融合后认不出是同一块
             )
             for h, p in ranked
         ]

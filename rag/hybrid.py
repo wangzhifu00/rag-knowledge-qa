@@ -16,9 +16,11 @@
   这是 Elasticsearch / OpenSearch 内置的标准融合方法。
 
 工程细节——BM25 索引放内存：
-  chunk 全文存在 Qdrant 的 payload 里，BM25 建索引时全量拉一遍，
+  chunk 原文现在存在 PostgreSQL（Qdrant 只存向量），建索引时从 PG 全量拉一遍，
   分词后缓存在进程内存。语料只有几百块，秒建；
-  用"集合点数"判断语料有没有变（新文档入库），变了自动重建索引。
+  用 PG 的 (行数, 最大id) 判断语料有没有变，变了自动重建。
+  评估脚本用临时集合跑不同切分参数，那些集合的原文还在 payload 里，
+  按集合名分别缓存，两条路互不干扰。
 """
 
 from functools import lru_cache
@@ -33,7 +35,7 @@ CANDIDATE_DEPTH = 20
 # RRF 的 k：越大名次差距越平滑，60 是论文推荐值（业界默认）
 RRF_K = 60
 
-# BM25 索引缓存：{"point_count": 上次建索引时的语料点数, "bm25": 索引, ...}
+# BM25 索引缓存：{"stamp": 语料版本, "bm25": 索引, "corpus": [...]}
 _bm25_cache: dict = {}
 
 
@@ -47,11 +49,8 @@ def _tokenize(text: str) -> list[str]:
     return [t for t in jieba.cut_for_search(text) if t.strip()]
 
 
-def _load_corpus(collection_name: str) -> tuple[list[SearchHit], int]:
-    """从 Qdrant 全量拉 chunk（原文在 payload 里，它是当前唯一存放地）。
-
-    返回 (所有 chunk 的 SearchHit 列表, 集合总点数)。
-    """
+def _scroll_collection(collection_name: str) -> tuple[list[SearchHit], int]:
+    """临时集合：payload 里带原文，直接全量 scroll。"""
     client = get_client()
     points, offset = client.scroll(
         collection_name=collection_name,
@@ -70,37 +69,67 @@ def _load_corpus(collection_name: str) -> tuple[list[SearchHit], int]:
         points.extend(more)
 
     total = client.count(collection_name=collection_name, exact=True).count
-    hits = [
-        SearchHit(
+    hits = []
+    for p in points:
+        try:
+            pid = int(p.id)
+        except (TypeError, ValueError):
+            pid = -1
+        hits.append(SearchHit(
             text=p.payload["text"],
             filename=p.payload.get("filename", collection_name),
             page_numbers=p.payload.get("page_numbers", []),
             score=0.0,  # 此时还没有分数，BM25 检索时才算
             chunk_index=p.payload.get("chunk_index", -1),
-        )
-        for p in points
-    ]
+            # 身份键必须和向量路对齐，否则 RRF 认不出"这是同一块"，
+            # 两路分数合不到一起（改造中踩过：混合指标一度整体下滑）
+            chunk_id=pid,
+        ))
     return hits, total
 
 
+def _load_corpus(collection_name: str) -> tuple[list[SearchHit], tuple]:
+    """全量 chunk + 语料版本号（版本号变了才重建 BM25 索引）。
+
+    正式集合从 PG 拉：原文的 source of truth 在那儿，Qdrant 只剩向量。
+    临时集合（评估脚本自建）还从 payload 拿——它压根不写 PG。
+    """
+    if collection_name == COLLECTION_NAME:
+        from app.db.chunks import load_corpus
+        rows, total = load_corpus()
+        hits = [
+            SearchHit(text=r.text, filename=r.filename,
+                      page_numbers=r.page_numbers, score=0.0,
+                      chunk_index=r.chunk_index, chunk_id=r.id)
+            for r in rows
+        ]
+        # 版本号用 (行数, 最大id)：重新入库是"删旧+插新"，新行 id 一定更大，
+        # 所以哪怕块数没变也能测出来
+        stamp = ("pg", total, max((r.id for r in rows), default=0))
+        return hits, stamp
+
+    hits, total = _scroll_collection(collection_name)
+    return hits, ("qdrant", total)
+
+
 def _get_bm25(collection_name: str) -> tuple[BM25Okapi | None, list[SearchHit]]:
-    """拿 BM25 索引（按集合分别缓存）。语料点数变了自动重建。
+    """拿 BM25 索引（按集合分别缓存）。语料版本变了自动重建。
 
     评估脚本会用临时集合跑不同参数，所以缓存必须按集合名区分，
     不能只按点数——不同配置的块数可能碰巧一样。
     """
-    corpus, total = _load_corpus(collection_name)
+    corpus, stamp = _load_corpus(collection_name)
     if not corpus:
         return None, []
 
     cache = _bm25_cache.setdefault(collection_name, {})
-    if cache.get("point_count") == total:
+    if cache.get("stamp") == stamp:
         return cache["bm25"], cache["corpus"]
 
     tokenized = [_tokenize(hit.text) for hit in corpus]
     bm25 = BM25Okapi(tokenized)
     cache.clear()
-    cache.update({"point_count": total, "bm25": bm25, "corpus": corpus})
+    cache.update({"stamp": stamp, "bm25": bm25, "corpus": corpus})
     return bm25, corpus
 
 
@@ -125,21 +154,24 @@ def _bm25_search(query: str, top_k: int, collection_name: str = COLLECTION_NAME)
                 page_numbers=corpus[i].page_numbers,
                 score=float(scores[i]),
                 chunk_index=corpus[i].chunk_index,
+                chunk_id=corpus[i].chunk_id,
             )
         )
     return results
 
 
 def _hit_key(hit: SearchHit) -> tuple:
-    """chunk 的身份标识：(文件名, chunk_index)。
+    """chunk 的身份标识：优先用 chunk_id（PG 主键，唯一且稳定）。
 
-    不能拿原文片段当身份——这份 PDF 里有跨页重复的代码块，
-    前 80 字符完全相同，会把两个不同的 chunk 当成一个，
-    分数重复累加，排名被虚假抬高（踩过这个坑）。
+    没有 chunk_id 时才退回 (文件名, chunk_index)——不能拿原文片段当身份：
+    这份 PDF 里有跨页重复的代码块，前 80 字符完全相同，会把两个不同的
+    chunk 当成一个，分数重复累加，排名被虚假抬高（踩过这个坑）。
     """
+    if hit.chunk_id >= 0:
+        return ("id", hit.chunk_id)
     if hit.chunk_index >= 0:
-        return (hit.filename, hit.chunk_index)
-    return (hit.filename, hit.text[:80])  # 兜底：老数据没有 chunk_index
+        return ("idx", hit.filename, hit.chunk_index)
+    return ("txt", hit.filename, hit.text[:80])  # 兜底：老数据两个字段都没有
 
 
 def _rrf_fuse(rankings: list[list[SearchHit]], top_k: int) -> list[SearchHit]:
@@ -163,6 +195,7 @@ def _rrf_fuse(rankings: list[list[SearchHit]], top_k: int) -> list[SearchHit]:
             page_numbers=hit_map[k].page_numbers,
             score=round(scores[k], 4),  # RRF 分数（供展示，别和相似度混淆）
             chunk_index=hit_map[k].chunk_index,
+            chunk_id=hit_map[k].chunk_id,
         )
         for k in fused_keys
     ]
@@ -212,3 +245,12 @@ def hybrid_search(
 def warmup_jieba() -> None:
     """预热分词器：jieba 首次分词要加载词典（约 1 秒），服务启动时提前做掉。"""
     jieba.initialize()
+
+
+def warmup_bm25(collection_name: str = COLLECTION_NAME) -> int:
+    """预建 BM25 索引，返回索引里的块数（0 表示语料还是空的）。
+
+    它要读 PG 全量原文再分词，放在服务启动时做掉，首问就不用等了。
+    """
+    bm25, corpus = _get_bm25(collection_name)
+    return len(corpus) if bm25 is not None else 0

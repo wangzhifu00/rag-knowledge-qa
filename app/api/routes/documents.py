@@ -14,18 +14,15 @@ from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, UploadFi
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.db.chunks import clear_cache, list_chunk_ids, replace_chunks
 from app.db.engine import get_db
 from app.db.models import Document
 from rag.chunker import chunk_pages
 from rag.cleaner import clean_pages
 from rag.embedder import get_embedder
 from rag.parser import parse_pdf
-from rag.retriever import (
-    delete_points_of_file,
-    ensure_collection,
-    get_client,
-    upsert_chunks,
-)
+from rag.retriever import (delete_points, ensure_collection, get_client,
+                           upsert_chunks)
 
 router = APIRouter(tags=["documents"])
 logger = logging.getLogger(__name__)
@@ -47,7 +44,7 @@ async def _set_status(doc_id: int, status: str, error: str | None = None) -> Non
 
 
 async def process_document(doc_id: int, file_path: Path, filename: str) -> None:
-    """后台入库任务：解析 → 切分 → 向量化 → 存 Qdrant → 更新状态。
+    """后台入库任务：解析 → 切分 → 原文入 PG → 向量化 → 存 Qdrant → 更新状态。
 
     注意：pypdf/fastembed/Qdrant 客户端都是同步阻塞的，
     用 asyncio.to_thread 包一层丢进线程池，避免卡死事件循环。
@@ -60,6 +57,10 @@ async def process_document(doc_id: int, file_path: Path, filename: str) -> None:
         pages = await asyncio.to_thread(clean_pages, pages)  # B 阶段：清洗噪声行
         chunks = await asyncio.to_thread(chunk_pages, pages)
 
+        # 原文先落 PG：它是 source of truth，向量只是从原文算出来的派生数据
+        old_ids = await list_chunk_ids(doc_id)
+        chunk_ids = await replace_chunks(doc_id, chunks)
+
         await _set_status(doc_id, "embedding")
 
         def _embed_and_store() -> int:
@@ -67,10 +68,11 @@ async def process_document(doc_id: int, file_path: Path, filename: str) -> None:
             vectors = embedder.embed_documents([c.text for c in chunks])
             client = get_client()
             ensure_collection(client, dim=embedder.dim)
-            delete_points_of_file(client, filename)  # 重复上传先清旧向量
-            return upsert_chunks(client, chunks, vectors, filename)
+            delete_points(client, old_ids)  # 旧块在 PG 里已删，向量一起清
+            return upsert_chunks(client, chunk_ids, vectors)
 
         count = await asyncio.to_thread(_embed_and_store)
+        clear_cache()  # 语料变了，让 BM25 索引下次提问时重建
         logger.info("文档 %s 入库完成：%d 块", filename, count)
         await _set_status(doc_id, "indexed")
 

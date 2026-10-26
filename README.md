@@ -36,9 +36,10 @@ flowchart LR
     A[PDF 上传] --> B[解析 pypdf]
     B --> C[清洗: 去页眉页脚噪声行]
     C --> D[切分 300字/重叠30]
-    D --> E[BGE 向量化]
-    E --> F[(Qdrant)]
-    D -. 原文块 .-> G[BM25 内存索引 jieba]
+    D --> P[(PostgreSQL chunks<br/>原文 source of truth)]
+    P --> E[BGE 向量化]
+    E --> F[(Qdrant<br/>向量 + chunk_id)]
+    P -. 全量原文 .-> G[BM25 内存索引 jieba]
 
     Q[用户提问] --> R{检索模式}
     R -->|vector| S[向量检索]
@@ -49,7 +50,8 @@ flowchart LR
     V -->|否| X[top5]
     W --> X
     S --> X
-    X --> Y{分数低于门槛?}
+    X --> H[按 chunk_id 回 PG 补原文<br/>BM25 路的已在内存]
+    H --> Y{分数低于门槛?}
     Y -->|是| Z[丢弃低分块<br/>材料置空]
     Y -->|否| AA[组装 Prompt: 主题 + 材料 + 问题]
     Z --> AA
@@ -63,6 +65,12 @@ flowchart LR
 ```
 
 检索采用工业标准的**两段式架构**：快的海选（向量+BM25 取 top20）→ 准的精排（交叉编码器挑 top5）。
+
+**数据分层**：原文只存 PostgreSQL 一份，Qdrant 里只有向量和一个 `chunk_id`（= chunks 表主键）。
+这么切的好处是"向量是派生数据"——换 embedding 模型时原文一个字不动，
+跑 `scripts/reindex.py` 重算向量即可，切分结果也没变，所以换模型前后的效果对比是干净的。
+反过来（原文只放向量库 payload）时，换模型就得重新解析 PDF、重新切分，
+历史结果直接失去可比性；想按文档/页做统计还得全量 scroll。
 
 **为什么门槛前面能"丢材料"却不能"直接拒"**：低分块全是噪声，喂给模型只会干扰；
 但"分低"有两种完全不同的原因——库里真没有（该拒），或者这根本不是知识库的问题
@@ -188,6 +196,10 @@ uvicorn app.main:app --reload --port 8000
 ### 5. 复现评估（可选）
 
 ```bash
+# 重建向量库：换 embedding 模型后必做（原文在 PG 不动，只重算向量）
+python scripts/reindex.py
+python scripts/reindex.py --model BAAI/bge-m3   # 指定模型重建（做对比实验）
+
 # 重建题集（可选）：LLM 出题 → 人工筛 eval/evalset_candidates.csv → 固化
 python scripts/gen_evalset.py               # 生成候选（约 40 道，几分钱）
 python scripts/gen_evalset.py --finalize    # 筛完转成 eval/golden_set.json
@@ -243,7 +255,10 @@ python scripts/eval_ragas.py                # RAGAS 答案质量(会消耗 LLM A
 1. **torch 装成 CPU 版**——`torch.cuda.is_available()` 返回 False 时一切推理都在 CPU 硬算；
    同样的 20 对候选，CPU 4s vs GPU 0.42s。装 CUDA 版只需换后缀：`torch==x.y.z+cu132`。
 2. **RRF 融合的身份键**——用"原文前 80 字符"做去重键时，跨页重复的代码块会被当成
-   同一条，分数重复累加导致排名虚高。改用 `(filename, chunk_index)` 作为唯一身份。
+   同一条，分数重复累加导致排名虚高。改用稳定 id；原文挪进 PG 后直接拿 `chunk_id` 当键。
+   改造中又踩了一次：向量路和 BM25 路的键构造方式不一致（一个用 point id、
+   另一个用文件名+序号），两路分数合不到一起，混合指标整体下滑 14 个点——
+   而纯向量那一路**完全没变**，正是这个对比把问题锁死在融合环节、而不是检索环节。
 3. **相关性 ≠ 可回答性**——reranker 只能判断"这段和问题有关"，判断不了"这段能否
    回答问题"。文档通篇讲 LangChain 时，"什么是LangChain"照样拿高分。因此拒答必须
    双保险：分数门槛粗筛 + LLM prompt 细判，实测两层各自独立生效。
@@ -251,10 +266,19 @@ python scripts/eval_ragas.py                # RAGAS 答案质量(会消耗 LLM A
    两条入库路产出不一致。修复方式是把根默认值收口到一处。
 5. **静态目录挂载顺序**——`StaticFiles` 挂到 `/` 会成为兜底路由吞掉所有 API，
    必须挂子路径（本项目挂 `/ui`）。
+6. **pypdf 抽内联代码会丢字**——PDF 里等宽字体的内联代码是独立文本块，按坐标抽取时
+   会被甩到句子后面：
+   `Use the RecursiveCharacterTextSplitter to recursively split the documents...`
+   抽出来的却是 `Use the to recursively split the documents ... RecursiveCharacterTextSplitter`。
+   后果很隐蔽：材料里明明有定义句，模型看到的是残句，按"有没有一句在讲 X 本身"的规则
+   判定为没有，于是拒答——而人工看 PDF 原文会觉得"这题明明能答"。
+   清洗救不回来（清洗只能删噪声，补不回丢掉的词），要根治得换解析器
+   （pdfplumber / pymupdf 能保留文本流顺序）。
 
 ## 已知限制与后续计划
 
-- [ ] chunks 原文入 PostgreSQL（source of truth），Qdrant 只存向量+ID，可随时重建
+- [x] chunks 原文入 PostgreSQL（source of truth），Qdrant 只存向量+ID，可随时重建
+      （`scripts/reindex.py`；纯向量模式的评估指标改造前后一字不差，说明回填链路正确）
 - [ ] Embedding 换 BGE-M3 对比（bge-small 跨语言弱：中文"智能体"查不到英文 "agent"；
       混合检索在跨语言语料上 context_recall 1.000→0.722，BM25 反而挤掉了正确块）
 - [ ] 多文档隔离：无关文档会挤占 top5（实测塞进一份简历后，某题 recall 直接归零），
@@ -281,6 +305,7 @@ rag-knowledge-qa/
 │   ├── config.py             # 全局配置(pydantic-settings)
 │   ├── api/routes/           # chat(问答+SSE流式) / documents / health
 │   └── db/                   # SQLAlchemy 异步 ORM + Alembic 迁移
+│       └── chunks.py         # chunk 原文读写口(PG 是 source of truth，含同步引擎)
 ├── rag/                      # RAG 核心
 │   ├── parser.py             # PDF 解析
 │   ├── cleaner.py            # 噪声行清洗
@@ -293,7 +318,7 @@ rag-knowledge-qa/
 │   ├── smalltalk.py          # 闲聊/身份类短路(不检索直接答)
 │   └── generator.py          # Prompt 组装 + 同步/流式生成
 ├── frontend/                 # 原生单页界面(index.html/style.css/app.js)
-├── scripts/                  # ingest / gen_evalset / eval_* / ask / drop_document
+├── scripts/                  # ingest / reindex / gen_evalset / eval_* / ask / drop_document
 ├── docker/docker-compose.yml # PG + Redis + Qdrant + Adminer
 ├── data/                     # 示例文档
 ├── docs/                     # 架构说明 + 界面截图

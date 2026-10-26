@@ -37,12 +37,23 @@ def _warmup_models() -> None:
     两个模块内部都有进程级单例（get_embedder / get_reranker），
     这里实例化后，之后的请求直接复用，不再付加载时间。
     Reranker 的模型在 __init__ 里就加载（CrossEncoder），所以拿到实例即完成预热。
+
+    顺带把 BM25 索引也建好：它要读 PG 全量 chunk 再分词，105 块约 0.5 秒，
+    放在首问会让人以为"服务卡了"。PG 没起来时这一步失败不影响服务启动。
     """
     from rag.embedder import get_embedder
     from rag.reranker import get_reranker
 
     get_embedder().embed_query("warmup")   # 触发 embedding 模型加载
     get_reranker()                         # 触发 reranker 模型加载
+
+    try:
+        from rag.hybrid import warmup_jieba, warmup_bm25
+        warmup_jieba()
+        n = warmup_bm25()
+        logger.info("BM25 索引预热完成（%d 块）", n)
+    except Exception:
+        logger.warning("BM25 预热失败（PG 未就绪？），首个混合检索请求会现场建索引")
 
 #FastAPI 新一代的生命周期管理方式
 @asynccontextmanager
