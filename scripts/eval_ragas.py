@@ -9,7 +9,7 @@
   context_recall     检索召回：该有的材料都进上下文了吗
 
 设计：
-  - 只评 8 道有答案的题。应拒答题没有参考答案，RAGAS 打不了分，
+  - 只评 7 道有答案的题。应拒答题没有参考答案，RAGAS 打不了分，
     它们的表现已由第一层评估的"拒答正确率"覆盖
   - 答案不是人写的，是系统真实生成的（generate_answer），检索也走
     真实链路——评的就是线上行为本身
@@ -44,7 +44,11 @@ from rag.retriever import best_vector_score, get_client, search
 
 settings = get_settings()
 
-# 8 道有答案题的参考答案（依据文档原文人工提炼，供 RAGAS 对比打分）
+# 7 道有答案题的参考答案（依据文档原文人工提炼，供 RAGAS 对比打分）
+# 注意：原 8 题里的「DeepAgents是什么」已剔除（2026-10-26）——
+# 复核语料后确认全文没有一句定义 Deep Agents，只有 URL/代码/导航链接，
+# 它属于"只提到名称、没给定义"，正确行为是拒答；
+# 原先的参考答案是我按常识补的，拿它当尺子等于惩罚正确行为
 REFERENCE = {
     "如何用LangChain做RAG":
         "按教程分两步：先索引文档（加载、切分、向量化、存入向量库），"
@@ -55,9 +59,6 @@ REFERENCE = {
     "文本切分器是什么":
         "文本切分器把长文档拆成小块（如 RecursiveCharacterTextSplitter），"
         "便于索引和检索，也方便传给模型。",
-    "DeepAgents是什么":
-        "Deep Agents 是 LangChain 的智能体框架，可编排检索、分析、综合等任务，"
-        "支持子代理、技能和评分细则（grading rubrics）。",
     "怎么创建智能体":
         "在 agent.py 中用 create_deep_agent 创建智能体：配置相似度检索工具、"
         "StateBackend 文件后端、编排工作流和子代理提示词。",

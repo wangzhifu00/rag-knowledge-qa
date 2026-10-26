@@ -48,7 +48,11 @@ TESTSET = [
     {"q": "如何用LangChain做RAG",    "pages": [1]},        # RAG patterns 介绍页
     {"q": "OpenAIEmbeddings怎么用",  "pages": [10]},       # embeddings 用法 + VectorStore
     {"q": "文本切分器是什么",         "pages": [9]},        # Split documents 章节
-    {"q": "DeepAgents是什么",        "pages": [1]},        # 首页 intro
+    # 原标 pages=[1]（首页 intro），2026-10-26 复核后改判应拒答：
+    # 全文只有 URL 路径 /deepagents/rag、代码里的 create_deep_agent、
+    # 导航链接（RAG patterns / Grading rubrics），没有一句说明"Deep Agents 是什么"。
+    # 这条标注错误是严格定义规则(prompt 第3条a)跑出来的——模型拒答是对的
+    {"q": "DeepAgents是什么",        "pages": None},
     {"q": "怎么创建智能体",           "pages": [12]},       # Build the agent 章节
     {"q": "支持哪些向量数据库",       "pages": [10]},       # 集成列表(In-memory/AstraDB/Chroma...)
     {"q": "怎么运行RAG agent",       "pages": [16]},       # Run the agent 章节
