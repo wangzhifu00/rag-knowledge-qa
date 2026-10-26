@@ -523,8 +523,10 @@ python scripts/eval_ragas.py --modes vector,hybrid,hybrid_rerank   # RAGAS（最
       但**不能原地升级服务端**——试过 v1.12.4 → v1.20.0 直接 panic 退出：
       `segment.json` 里的 `on_disk` 新版本只认 `mmap` / `in_ram_mmap`，
       中间版本改过存储布局且没留兼容迁移。要对齐版本只能删卷重建
-      （原文在 PG，`reindex.py` 32 秒重建完）。Docker 化之前一直是本地 venv
-      跑老客户端，所以这个不匹配是容器化才暴露出来的
+      （原文在 PG，`reindex.py` 32 秒重建完）。这条警告**本地跑也有**
+      （venv 里同样是 1.20.0），只是裸跑 uvicorn 时没人盯启动日志；
+      容器化后 `docker logs` 一屏屏刷出来，才第一次被看见
+      —— "换个方式运行，老问题才浮出来"是这次最实在的收获
 - [x] 评估集扩充：`gen_evalset.py` 让 LLM 只看着单个 chunk 出题（手写题会"照着答案出题"，
       检索必中、分数虚高），本地向量检索免费质检，人工筛后固化 `eval/golden_set.json`；
       两个评估脚本统一读它，换题集不用改命令
