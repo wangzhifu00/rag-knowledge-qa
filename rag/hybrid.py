@@ -173,11 +173,13 @@ def hybrid_search(
     embedder,
     top_k: int = 5,
     collection_name: str = COLLECTION_NAME,
+    rerank: bool = False,
 ) -> list[SearchHit]:
-    """混合检索主入口：向量一路 + BM25 一路 → RRF 融合。
+    """混合检索主入口：向量一路 + BM25 一路 → RRF 融合 → (可选)精排。
 
-    注意 RRF 后的 score 是融合名次分，不是相似度——
-    它只用于排序，数值大小没有"相似程度"的直观含义。
+    rerank=False：返回 RRF 名次分（只用于排序，别当相似度理解）
+    rerank=True ：融合后取 top20 候选交给交叉编码器精排，
+                  返回 rerank 相关度概率(0~1)——精度最高，多花1~2秒
     """
     # 延迟导入避免循环依赖：retriever.search 里用不到 hybrid
     from rag.retriever import search as vector_search
@@ -188,13 +190,20 @@ def hybrid_search(
     keyword_hits = _bm25_search(query, top_k=CANDIDATE_DEPTH,
                                 collection_name=collection_name)
 
-    fused = _rrf_fuse([vector_hits, keyword_hits], top_k=top_k)
+    # 要精排就多留候选（20个进决赛），否则直接融合出 top_k
+    fused = _rrf_fuse([vector_hits, keyword_hits],
+                      top_k=CANDIDATE_DEPTH if rerank else top_k)
 
-    # 把向量原始分贴回融合结果——拒答门槛判断的是相似度，不是 RRF 名次分
+    # 把向量原始分贴回融合结果——拒答兜底和调试都要用相似度，不是名次分
     vector_scores = {_hit_key(h): h.vector_score for h in vector_hits}
     for hit in fused:
         if hit.vector_score is None:
             hit.vector_score = vector_scores.get(_hit_key(hit))
+
+    if rerank:
+        from rag.reranker import get_reranker  # 延迟导入：torch 很重，不用不加载
+
+        fused = get_reranker().rerank(query, fused, top_k=top_k)
 
     return fused
 

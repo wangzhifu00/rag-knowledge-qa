@@ -4,9 +4,10 @@
 本脚本量的是"该找到的找到没 / 不该编的有没有拒"。
 
 用法（项目根目录）：
-    python scripts/eval_retrieval.py                                  # 双模式对比(默认 500/50 清洗)
-    python scripts/eval_retrieval.py --chunk-size 300 --overlap 30    # 换切分参数
-    python scripts/eval_retrieval.py --no-clean                       # 不清洗(baseline)
+    python scripts/eval_retrieval.py                          # 三模式对比(默认 300/30，同正式集合)
+    python scripts/eval_retrieval.py --mode both              # 只跑 向量 vs 混合
+    python scripts/eval_retrieval.py --chunk-size 500 --overlap 50   # 换切分参数复现旧实验
+    python scripts/eval_retrieval.py --no-clean               # 不清洗(baseline)
 
 指标定义：
   hit@1      第一条就命中标准页的比例（answerable 题）
@@ -88,7 +89,10 @@ def build_index(client: QdrantClient, embedder, chunk_size: int, overlap: int,
 
 
 def run_one(client: QdrantClient, embedder, question: str, mode: str) -> list:
-    """单题检索：返回 SearchHit 列表（两种模式统一返回格式）。"""
+    """单题检索：返回 SearchHit 列表（三种模式统一返回格式）。"""
+    if mode == "hybrid_rerank":
+        return hybrid_search(question, embedder, top_k=5, rerank=True,
+                             collection_name=EVAL_COLLECTION)
     if mode == "hybrid":
         return hybrid_search(question, embedder, top_k=5,
                              collection_name=EVAL_COLLECTION)
@@ -96,8 +100,15 @@ def run_one(client: QdrantClient, embedder, question: str, mode: str) -> list:
                   collection_name=EVAL_COLLECTION)
 
 
-def evaluate_mode(client: QdrantClient, embedder, mode: str, min_score: float) -> dict:
-    """跑一种模式的全部题目，返回指标和逐题明细。"""
+def evaluate_mode(client: QdrantClient, embedder, mode: str) -> dict:
+    """跑一种模式的全部题目，返回指标和逐题明细。
+
+    拒答门槛分模式：hybrid_rerank 用 reranker 概率(区分度高,主门槛)，
+    其余退回向量相似度门槛。
+    """
+    settings = get_settings()
+    threshold = (settings.rerank_min_score if mode == "hybrid_rerank"
+                 else settings.retrieval_min_score)
     stats = {"hit1": 0, "hit5": 0, "mrr": [], "refusal_ok": 0, "n_refusal": 0}
     details = []
     pos_scores, neg_scores = [], []  # 有答案题/无答案题的 top1 分（阈值校准用）
@@ -105,11 +116,13 @@ def evaluate_mode(client: QdrantClient, embedder, mode: str, min_score: float) -
     for item in TESTSET:
         q, golden = item["q"], item["pages"]
         hits = run_one(client, embedder, q, mode)
-        top1 = best_vector_score(hits)
+        # rerank 模式下 hits[0].score 就是 rerank 概率；其余取向量原始分
+        top1 = hits[0].score if (mode == "hybrid_rerank" and hits) \
+            else best_vector_score(hits)
 
         if golden is None:
             # 应拒答题：top1 分低于门槛才算对
-            refused = top1 < min_score
+            refused = top1 < threshold
             stats["n_refusal"] += 1
             stats["refusal_ok"] += int(refused)
             neg_scores.append(top1)
@@ -142,11 +155,14 @@ def evaluate_mode(client: QdrantClient, embedder, mode: str, min_score: float) -
 
 def main() -> None:
     ap = argparse.ArgumentParser()
-    ap.add_argument("--chunk-size", type=int, default=500)
-    ap.add_argument("--overlap", type=int, default=50)
+    ap.add_argument("--chunk-size", type=int, default=300)
+    ap.add_argument("--overlap", type=int, default=30)
     ap.add_argument("--clean", dest="clean", action="store_true", default=True)
     ap.add_argument("--no-clean", dest="clean", action="store_false")
-    ap.add_argument("--mode", choices=["vector", "hybrid", "both"], default="both")
+    ap.add_argument("--mode",
+                    choices=["vector", "hybrid", "hybrid_rerank", "both", "all"],
+                    default="all",
+                    help="all=三种模式对比(默认) both=前两种")
     args = ap.parse_args()
 
     settings = get_settings()
@@ -157,37 +173,58 @@ def main() -> None:
     n = build_index(client, embedder, args.chunk_size, args.overlap, args.clean)
     label = "清洗" if args.clean else "不清洗"
     print(f"\n评估集：{label} chunk={args.chunk_size}/{args.overlap} → {n} 块 | "
-          f"10 题（8 有答案 + 2 应拒答）| 拒答门槛 {settings.retrieval_min_score}\n")
+          f"10 题（8 有答案 + 2 应拒答）| 门槛: 向量{settings.retrieval_min_score} "
+          f"/ rerank{settings.rerank_min_score}\n")
 
-    modes = ["vector", "hybrid"] if args.mode == "both" else [args.mode]
+    mode_map = {
+        "vector": ["vector"],
+        "hybrid": ["hybrid"],
+        "hybrid_rerank": ["hybrid_rerank"],
+        "both": ["vector", "hybrid"],
+        "all": ["vector", "hybrid", "hybrid_rerank"],
+    }
+    mode_names = {
+        "vector": "纯向量",
+        "hybrid": "混合(RRF)",
+        "hybrid_rerank": "混合+精排(Rerank)",
+    }
     summary = {}
-    for mode in modes:
-        r = evaluate_mode(client, embedder, mode, settings.retrieval_min_score)
+    for mode in mode_map[args.mode]:
+        r = evaluate_mode(client, embedder, mode)
         summary[mode] = r
-        name = "纯向量" if mode == "vector" else "混合(RRF)"
-        print(f"—— {name} ——")
+        print(f"—— {mode_names[mode]} ——")
         for q, golden, tag, top1 in r["details"]:
             print(f"  {tag:<7} top1={top1:.3f}  答案页[{golden}]  {q}")
         print(f"  hit@1={r['hit1']:.0%}  hit@5={r['hit5']:.0%}  "
               f"MRR={r['mrr']:.3f}  拒答正确率={r['refusal']:.0%}\n")
 
-    if len(summary) == 2:
-        v, h = summary["vector"], summary["hybrid"]
-        print("=" * 56)
-        print(f"对比：hit@5 {v['hit5']:.0%} → {h['hit5']:.0%} | "
-              f"MRR {v['mrr']:.3f} → {h['mrr']:.3f} | "
-              f"拒答 {v['refusal']:.0%} → {h['refusal']:.0%}")
-        print("=" * 56)
+    # 汇总对比表（≥2 种模式时）
+    if len(summary) >= 2:
+        cols = "  ".join(f"{mode_names[m]:>14}" for m in summary)
+        print("=" * (24 + 17 * len(summary)))
+        print(f"{'指标':<22}{cols}")
+        print("-" * (24 + 17 * len(summary)))
+        rows = [
+            ("hit@1", lambda r: f"{r['hit1']:.0%}"),
+            ("hit@5", lambda r: f"{r['hit5']:.0%}"),
+            ("MRR", lambda r: f"{r['mrr']:.3f}"),
+            ("拒答正确率", lambda r: f"{r['refusal']:.0%}"),
+        ]
+        for label_, fn in rows:
+            vals = "  ".join(f"{fn(summary[m]):>14}" for m in summary)
+            print(f"{label_:<22}{vals}")
+        print("=" * (24 + 17 * len(summary)))
 
-    # 阈值校准建议：正例最低分与负例最高分之间取中点
-    pos = min(summary[m]["pos_min"] for m in summary)
-    neg = max(summary[m]["neg_max"] for m in summary)
-    if neg < pos:
-        print(f"阈值校准：正例最低 top1={pos:.3f}，负例最高 top1={neg:.3f}，"
-              f"建议门槛 ≈ {(pos + neg) / 2:.2f}")
-    else:
-        print(f"⚠️ 分数区间重叠（负例最高 {neg:.3f} ≥ 正例最低 {pos:.3f}），"
-              f"单靠分数门槛分不开，需保留 prompt 层兜底")
+    # 阈值校准建议：每种模式各自报告正例最低分/负例最高分
+    for m, r in summary.items():
+        scale = "rerank概率" if m == "hybrid_rerank" else "余弦相似度"
+        if r["neg_max"] < r["pos_min"]:
+            mid = (r["pos_min"] + r["neg_max"]) / 2
+            print(f"[{mode_names[m]}] 可分：正例最低={r['pos_min']:.3f} "
+                  f"负例最高={r['neg_max']:.3f} → 建议门槛≈{mid:.2f} ({scale})")
+        else:
+            print(f"[{mode_names[m]}] ⚠️ 分数重叠(正例最低{r['pos_min']:.3f} ≤ "
+                  f"负例最高{r['neg_max']:.3f})，门槛分不开，需 prompt 层兜底 ({scale})")
 
     client.delete_collection(EVAL_COLLECTION)
 

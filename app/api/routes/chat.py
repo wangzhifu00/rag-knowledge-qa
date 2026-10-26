@@ -30,9 +30,10 @@ class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500, description="用户问题")
     top_k: int = Field(default=5, ge=1, le=20, description="检索条数")
     mode: str = Field(
-        default="hybrid",
-        pattern="^(vector|hybrid)$",
-        description="检索模式：vector=纯向量, hybrid=向量+BM25+RRF 融合",
+        default="hybrid_rerank",  # 评估胜出配置: hit@5 88% / MRR 0.72
+        pattern="^(vector|hybrid|hybrid_rerank)$",
+        description="检索模式：vector=纯向量, hybrid=向量+BM25+RRF, "
+                    "hybrid_rerank=再加交叉编码器精排(多花1~2秒)",
     )
 
 
@@ -58,9 +59,14 @@ class ChatResponse(BaseModel):
 def chat(req: ChatRequest) -> ChatResponse:
     t0 = time.time()
 
-    # 检索（同步阻塞，线程池里跑）。默认 hybrid，想对比可传 mode=vector
+    # 检索（同步阻塞，线程池里跑）。默认 hybrid_rerank（精度最高）
     embedder = get_embedder()
-    if req.mode == "hybrid":
+    if req.mode == "hybrid_rerank":
+        from rag.hybrid import hybrid_search, warmup_jieba
+
+        warmup_jieba()
+        hits = hybrid_search(req.question, embedder, top_k=req.top_k, rerank=True)
+    elif req.mode == "hybrid":
         from rag.hybrid import hybrid_search, warmup_jieba
 
         warmup_jieba()
@@ -70,15 +76,21 @@ def chat(req: ChatRequest) -> ChatResponse:
         hits = search(client, embedder, req.question, top_k=req.top_k)
     t_search = time.time() - t0
 
-    # 前置拒答：top1 向量相似度低于门槛 → 不调 LLM 直接拒。
+    # 前置拒答：门槛分模式——rerank 模式用 reranker 概率(区分度高，
+    # 是主门槛)，其余模式退回向量相似度门槛(区分度不足,仅兜底)。
     # 背景：曾出现"库里没有的内容，模型自己编一段还标了假引用"——
     # 与其让 LLM 硬编，不如在检索层就承认"库里没有"。
-    top_score = best_vector_score(hits)
+    if req.mode == "hybrid_rerank":
+        top_score = max((h.score for h in hits), default=0.0)
+        threshold = settings.rerank_min_score
+    else:
+        top_score = best_vector_score(hits)
+        threshold = settings.retrieval_min_score
     elapsed_partial = {
         "search_seconds": round(t_search, 2),
         "total_seconds": round(time.time() - t0, 2),
     }
-    if top_score < settings.retrieval_min_score:
+    if top_score < threshold:
         return ChatResponse(
             answer=REFUSAL_ANSWER,
             sources=[],

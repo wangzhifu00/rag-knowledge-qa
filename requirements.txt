@@ -21,3 +21,4 @@ rank-bm25>=0.2.2             # BM25 关键词检索算法(纯Python,极轻)
 jieba>=0.42.1                # 中文分词(BM25 需要先切词)
 ragas>=0.2.0                 # RAG 答案质量评估(忠实度/切题度,LLM当裁判)
 langchain-openai>=0.2.0      # ragas 的裁判LLM/向量化走 OpenAI 兼容接口时需要
+sentence-transformers>=3.0   # 交叉编码器精排(bge-reranker-base,含CPU版torch)

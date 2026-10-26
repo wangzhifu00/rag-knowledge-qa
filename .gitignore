@@ -49,3 +49,5 @@ logs/
 qdrant_storage/
 postgres_data/
 redis_data/
+# 本地大模型(reranker等,约1GB+,从ModelScope下载)
+models/
