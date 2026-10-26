@@ -7,8 +7,8 @@
   },
   "stats": {
     "total": 29,
-    "answerable": 18,
-    "refusal": 11
+    "answerable": 17,
+    "refusal": 12
   },
   "items": [
     {
@@ -139,12 +139,10 @@
     },
     {
       "q": "LangChain 里提到的 RAG 基础组件有哪些？",
-      "pages": [
-        1
-      ],
-      "reference": "文档中明确列出的 RAG 基础组件包括：custom retrieval tools（自定义检索工具）、a （此处原文留空）、（两个连续空格）、和（另一个空格）。",
-      "expect": "answerable",
-      "kind": "answerable"
+      "pages": null,
+      "reference": null,
+      "expect": "refuse",
+      "kind": "应拒-主题内缺内容"
     },
     {
       "q": "为什么光靠大语言模型自己没法回答最近刚改过的某个API的问题？",
