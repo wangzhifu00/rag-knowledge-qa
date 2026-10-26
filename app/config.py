@@ -67,6 +67,16 @@ class Settings(BaseSettings):
     # 部署/演示场景保持 true（默认）。
     warmup_on_start: bool = True
 
+    # ---------- 知识库主题 ----------
+    # 注入 prompt，用来区分两种"答不了"：
+    #   · 话题属于本知识库但材料没写 → 拒答（内部资料不能被外部常识替代）
+    #   · 话题根本不属于本知识库    → 用模型通用知识回答，并标明"非知识库内容"
+    # 换语料时要跟着改，否则模型会拿旧主题做判断。
+    kb_description: str = (
+        "LangChain 官方文档——如何用 LangChain / Deep Agents 构建 RAG 问答应用"
+        "（文档加载、切分、嵌入、向量库、智能体编排、运行与评估）"
+    )
+
     #把零散字段拼成 psycopg 要的连接串。  psycopg 是 Python 连接 PostgreSQL 数据库最主流的驱动库
     # @property 表示调用时不用加括号：settings.postgres_dsn。
     @property

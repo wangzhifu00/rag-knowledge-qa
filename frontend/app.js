@@ -257,7 +257,9 @@ async function ask(question) {
       // 闲聊/身份类走短路，后端 top_score 是 null——不要显示成 top 0.000
       meta.textContent = evt.smalltalk
         ? "闲聊/身份类问题 · 未检索"
-        : `检索 ${evt.search_seconds}s · top ${Number(evt.top_score).toFixed(3)} / 门槛 ${evt.threshold}`;
+        : `检索 ${evt.search_seconds}s · top ${Number(evt.top_score).toFixed(3)} / 门槛 ${evt.threshold}${
+            evt.below_threshold ? " · 材料不足，交给模型判断" : ""
+          }`;
     } else if (evt.type === "sources") {
       renderSources(evt.sources);
     } else if (evt.type === "token") {
@@ -270,12 +272,14 @@ async function ask(question) {
       // refused=true 是检索门槛拦的；这里再兜一层：模型按 prompt 规矩
       // 自己说"无法回答"时后端不知道（refused 仍是 false），前端按文本补标黄。
       if (refused || /无法回答|无法根据现有资料/.test(acc)) bubble.classList.add("refused");
+      // 通用知识回答（非知识库内容）：虚线框，暗示这段没有出处
+      if (/^（以下不属于知识库内容）/.test(acc.trim())) bubble.classList.add("general");
       const e = evt.elapsed || {};
       const total = ((performance.now() - t0) / 1000).toFixed(1);
       meta.textContent = info?.smalltalk
         ? `共 ${total}s · 未检索 · 固定话术`
         : refused
-        ? `拒答 · top ${Number(info?.top_score || 0).toFixed(3)} < 门槛 ${info?.threshold} · 未调用模型`
+        ? `拒答 · 模型判定材料不足（top ${Number(info?.top_score || 0).toFixed(3)} / 门槛 ${info?.threshold}）`
         : `检索 ${e.search_seconds ?? "?"}s · 生成 ${e.generate_seconds ?? "?"}s · 共 ${total}s · 模式 ${info?.mode ?? ""}`;
       scrollToBottom();
     } else if (evt.type === "error") {

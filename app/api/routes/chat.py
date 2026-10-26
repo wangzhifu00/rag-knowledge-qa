@@ -59,8 +59,9 @@ class ChatResponse(BaseModel):
     sources: list[SourceOut]
     question: str
     mode: str
-    refused: bool = False          # True=触发了检索质量门槛拒答
+    refused: bool = False          # True=模型按 prompt 判定材料不足（以固定开头识别）
     smalltalk: bool = False        # True=闲聊/身份类，未检索
+    below_threshold: bool = False  # True=检索分低于门槛，材料已丢弃（可能是通用问题）
     top_vector_score: float = 0.0  # top1 分数（调试/评估用）
     elapsed: dict
 
@@ -137,32 +138,29 @@ def chat(req: ChatRequest) -> ChatResponse:
     hits, top_score = _retrieve(req.question, req.top_k, req.mode)
     t_search = time.time() - t0
 
-    # 前置拒答：曾出现"库里没有的内容，模型自己编一段还标了假引用"——
-    # 与其让 LLM 硬编，不如在检索层就承认"库里没有"。
-    if top_score < _refusal_threshold(req.mode):
-        return ChatResponse(
-            answer=REFUSAL_ANSWER,
-            sources=[],
-            question=req.question,
-            mode=req.mode,
-            refused=True,
-            top_vector_score=round(top_score, 4),
-            elapsed={
-                "search_seconds": round(t_search, 2),
-                "total_seconds": round(time.time() - t0, 2),
-            },
-        )
+    # 分数低于门槛：把命中结果丢掉（低分块全是噪声，喂给模型只会干扰），
+    # 但**不再直接返回拒答**——材料为空有两种可能：
+    #   ① 这题库里真没有 → 模型按规则 3-a / 3-b 拒答
+    #   ② 这根本不是知识库范围的问题（"Python 怎么读文件"）→ 规则 3-c 用通用知识答
+    # 以前在检索层就把 ② 一起拒掉了，等于把模型的通用能力阉了。
+    below_threshold = top_score < _refusal_threshold(req.mode)
+    if below_threshold:
+        hits = []
 
     t1 = time.time()
-    answer = generate_answer(req.question, hits)
+    answer = generate_answer(req.question, hits) or REFUSAL_ANSWER
     t_generate = time.time() - t1
+
+    # 拒答由模型自己决定（按 prompt 的固定开头判断），后端只做识别
+    refused = answer.lstrip().startswith("根据现有资料无法回答")
 
     return ChatResponse(
         answer=answer,
-        sources=_to_sources(hits),
+        sources=[] if refused else _to_sources(hits),
         question=req.question,
         mode=req.mode,
-        refused=False,
+        refused=refused,
+        below_threshold=below_threshold,
         top_vector_score=round(top_score, 4),
         elapsed={
             "search_seconds": round(t_search, 2),
@@ -227,6 +225,11 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
 
         t_search = time.time() - t0
         threshold = _refusal_threshold(req.mode)
+        # 低分时丢弃命中块（全是噪声），但继续调模型——由 prompt 判断
+        # 是"库里有主题没内容"（拒答）还是"根本不属于知识库"（通用知识回答）
+        below = top_score < threshold
+        if below:
+            hits = []
 
         yield _sse({
             "type": "meta",
@@ -235,34 +238,32 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
             "top_score": round(top_score, 4),
             "threshold": threshold,
             "search_seconds": round(t_search, 2),
+            "below_threshold": below,
         })
-
-        if top_score < threshold:
-            elapsed = {
-                "search_seconds": round(t_search, 2),
-                "total_seconds": round(time.time() - t0, 2),
-            }
-            yield _sse({"type": "sources", "sources": []})
-            yield _sse({"type": "token", "text": REFUSAL_ANSWER})
-            yield _sse({"type": "done", "refused": True, "elapsed": elapsed})
-            return
 
         yield _sse({
             "type": "sources",
-            "sources": [s.model_dump() for s in _to_sources(hits)],
+            "sources": [] if below else [s.model_dump() for s in _to_sources(hits)],
         })
 
         t1 = time.time()
+        acc: list[str] = []
         try:
             async for piece in stream_answer(req.question, hits):
+                acc.append(piece)
                 yield _sse({"type": "token", "text": piece})
         except Exception as exc:  # noqa: BLE001
             yield _sse({"type": "error", "message": f"生成失败：{exc}"})
             return
 
+        # 拒答由模型自己决定（固定开头），后端只识别——不再由检索门槛拍板
+        answer = "".join(acc)
+        refused = answer.lstrip().startswith("根据现有资料无法回答")
+
         yield _sse({
             "type": "done",
-            "refused": False,
+            "refused": refused,
+            "below_threshold": below,
             "elapsed": {
                 "search_seconds": round(t_search, 2),
                 "generate_seconds": round(time.time() - t1, 2),
