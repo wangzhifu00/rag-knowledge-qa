@@ -118,14 +118,23 @@ async def score_mode(records: list[dict], metrics: dict) -> dict[str, list[float
 
     新式指标要求异步客户端 + await ascore(...)，
     这里串行 await（不并发），控制裁判调用的节奏。
+
+    单条失败不中断整轮：记 nan 继续跑。真实踩过的坑——
+    faithfulness 要把答案拆成若干论断逐条判定，长答案的判定 JSON
+    超过裁判 max_tokens 会抛 IncompleteOutputException（见坑19）。
     """
     scores = {name: [] for name in metrics}
     for record in records:
         row = {}
         for name, metric in metrics.items():
             kwargs = {f: record[f] for f in METRIC_FIELDS[name]}
-            result = await metric.ascore(**kwargs)
-            value = result.value if hasattr(result, "value") else float(result)
+            try:
+                result = await metric.ascore(**kwargs)
+                value = result.value if hasattr(result, "value") else float(result)
+            except Exception as exc:  # noqa: BLE001 - 单条失败不该毁掉整轮
+                print(f"  [WARN] {name} 在「{record['user_input']}」上失败: "
+                      f"{type(exc).__name__}: {exc}")
+                value = float("nan")
             scores[name].append(value)
             row[name] = value
         print("  " + record["user_input"] + "  " +
@@ -147,6 +156,17 @@ def main() -> None:
                           base_url=settings.llm_base_url)
     judge_llm = llm_factory(model=settings.llm_model, provider="openai",
                             client=aclient)
+    # max_tokens 必须显式放大：llm_factory 造出的 InstructorLLM 默认只有 1024
+    # （InstructorModelArgs 的默认值），而 faithfulness 要把长答案拆成几十条
+    # 论断逐条判定，判定结果 JSON 一超限就抛 IncompleteOutputException，
+    # 整轮评估直接崩（坑19）。llm_factory 不接受 model_args 参数，只能构造后改；
+    # 0.4.3 里 model_args 是 dict（换成 pydantic 对象的写法也一并兼容）。
+    if isinstance(judge_llm.model_args, dict):
+        judge_llm.model_args["temperature"] = 0
+        judge_llm.model_args["max_tokens"] = 4096
+    else:
+        judge_llm.model_args.temperature = 0
+        judge_llm.model_args.max_tokens = 4096
     # 切题度指标需要向量化答案，用同一家 embedding 服务
     judge_embeddings = RagasOpenAIEmbeddings(client=aclient,
                                              model="text-embedding-v3")
@@ -175,15 +195,17 @@ def main() -> None:
         results[mode] = asyncio.run(score_mode(records, metrics))
         print(f"  ({time.time() - t0:.0f}s)")
 
-    # 汇总对比：两个模式各指标的平均分
+    # 汇总对比：两个模式各指标的平均分（跳过失败条目的 nan）
+    def mean(values: list[float]) -> float:
+        valid = [v for v in values if v == v]   # 过滤 nan
+        return sum(valid) / len(valid) if valid else float("nan")
+
     print("\n" + "=" * 62)
     print(f"{'指标':<20}{'纯向量':>10}{'混合(RRF)':>12}")
     print("-" * 62)
     for m in METRIC_FIELDS:
-        v = (sum(results["vector"][m]) / len(results["vector"][m])
-             if "vector" in results else float("nan"))
-        h = (sum(results["hybrid"][m]) / len(results["hybrid"][m])
-             if "hybrid" in results else float("nan"))
+        v = mean(results["vector"][m]) if "vector" in results else float("nan")
+        h = mean(results["hybrid"][m]) if "hybrid" in results else float("nan")
         print(f"{m:<20}{v:>10.3f}{h:>12.3f}")
     print("=" * 62)
     print("解读：faithfulness 最重要（反幻觉）；0.0~1.0，越高越好")
