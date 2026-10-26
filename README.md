@@ -504,6 +504,15 @@ python scripts/eval_ragas.py --modes vector,hybrid,hybrid_rerank   # RAGAS（最
       模型答"2"是照着材料答的，不是幻觉——但它相对 PDF 原文是错的。
       所以 `文本切分参数是多少` 不适合当演示题；要修得把 chunk_size 提到 500~800，
       或按结构切（代码块不切断），改完所有数字都要重跑
+- [ ] **Qdrant 服务端 v1.12.4、客户端 1.20.0，差 8 个 minor**，启动会打一条
+      `client version 1.20.0 is incompatible with server version 1.12.4` 的警告。
+      实测检索和写入都正常（`reindex.py` 的建集合 / 删集合 / 灌 105 点全跑通，
+      32.3 秒），警告来自客户端自带的版本检查，不是真实故障。
+      但**不能原地升级服务端**——试过 v1.12.4 → v1.20.0 直接 panic 退出：
+      `segment.json` 里的 `on_disk` 新版本只认 `mmap` / `in_ram_mmap`，
+      中间版本改过存储布局且没留兼容迁移。要对齐版本只能删卷重建
+      （原文在 PG，`reindex.py` 32 秒重建完）。Docker 化之前一直是本地 venv
+      跑老客户端，所以这个不匹配是容器化才暴露出来的
 - [x] 评估集扩充：`gen_evalset.py` 让 LLM 只看着单个 chunk 出题（手写题会"照着答案出题"，
       检索必中、分数虚高），本地向量检索免费质检，人工筛后固化 `eval/golden_set.json`；
       两个评估脚本统一读它，换题集不用改命令

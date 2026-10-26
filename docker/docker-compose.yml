@@ -107,6 +107,11 @@ services:
       retries: 5
 
   # ---------- Qdrant: 向量数据库 ----------
+  # ⚠ 版本不能随便往上跳：实测 v1.12.4 → v1.20.0 直接启动失败，
+  #   segment.json 里的 `on_disk` 字段新版本不认（只认 mmap / in_ram_mmap），
+  #   中间几个版本改过存储布局且没有向后兼容迁移。
+  #   若要与新版 qdrant-client 对齐，得删卷重建（原文在 PG，跑 reindex 就行），
+  #   不能原地升级。
   qdrant:
     image: qdrant/qdrant:v1.12.4
     container_name: rag-qdrant
