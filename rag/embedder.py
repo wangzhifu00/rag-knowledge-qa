@@ -53,6 +53,9 @@ class Embedder:
         self.model_name = model_name or settings.embedding_model_name
         self.backend = backend or _guess_backend(self.model_name)
         self.local_dir = _local_dir(self.model_name)
+        # 默认值先给上，st 后端会覆盖（fastembed 走 ONNX，自己管设备）
+        self.device = "cpu"
+        self.fp16 = False
 
         if self.backend == "st":
             self._init_st()
@@ -75,21 +78,19 @@ class Embedder:
     def _init_st(self) -> None:
         from sentence_transformers import SentenceTransformer
 
+        from rag.device import model_kwargs, resolve_device
+
+        settings = get_settings()
         source = str(self.local_dir) if self.local_dir else self.model_name
-        self._model = SentenceTransformer(source, device=self._pick_device())
-
-    @staticmethod
-    def _pick_device() -> str:
-        """有 GPU 就用：BGE-M3 在 3050 Ti 上比 CPU 快 10 倍以上。
-
-        4GB 显存放 2.3GB 的 fp32 模型是紧的，但 batch_size 控制住就够
-        （embeddings 没有 rerank 那种成对输入，占用小得多）。
-        """
-        try:
-            import torch
-            return "cuda" if torch.cuda.is_available() else "cpu"
-        except ImportError:
-            return "cpu"
+        self.device = resolve_device(settings.embedding_device)
+        self.fp16 = self.device == "cuda" and settings.gpu_fp16
+        # 半精度在 from_pretrained 阶段就定下来，避免"fp32 上卡再转 half"
+        # 多要出近 1GB 临时显存（4GB 卡上必炸的那一步）
+        self._model = SentenceTransformer(
+            source,
+            device=self.device,
+            model_kwargs=model_kwargs(self.device, settings.gpu_fp16),
+        )
 
     def _embed_st(self, texts: list[str]) -> list[list[float]]:
         # normalize_embeddings：Qdrant 建集合用的是 COSINE，
@@ -101,7 +102,10 @@ class Embedder:
             convert_to_numpy=True,
             show_progress_bar=len(texts) > 64,   # 大批量给个进度条，小批量不吵
         )
-        return vectors.tolist()
+        # fp16 模型输出的是 float16，统一转回 float32 再落库：
+        # 上游（Qdrant / numpy / 后续计算）全都按 float32 设计，
+        # 混着 fp16 会在这里悄无声息地出精度问题
+        return vectors.astype("float32").tolist()
 
     # ---------- 对外接口 ----------
     def embed_documents(self, texts: list[str]) -> list[list[float]]:

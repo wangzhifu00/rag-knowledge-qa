@@ -56,6 +56,15 @@ class Settings(BaseSettings):
     app_port: int = 8000
     log_level: str = "INFO"
 
+    # ---------- 设备与精度（4GB 显卡的生存配置）----------
+    # auto / cuda / cpu。两个模型都 auto 时都会上 GPU——
+    # 3050 Ti 只有 4GB，fp32 的两个 568M 模型必然 OOM，
+    # 所以默认开半精度把它们压到各 ~1.15GB。
+    # 若仍不够：把 rerank_device 设成 cpu，只让 embedding 吃显卡。
+    embedding_device: str = "auto"
+    rerank_device: str = "auto"
+    gpu_fp16: bool = True
+
     # ---------- 检索质量门槛（前置拒答） ----------
     # top1 向量相似度低于该值时直接拒答、不调 LLM：
     # 既堵住"材料不够模型硬编"的幻觉，又省 token。

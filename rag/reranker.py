@@ -42,8 +42,20 @@ class Reranker:
         # 延迟导入：torch + sentence-transformers 很重，不用 rerank 就不加载
         from sentence_transformers import CrossEncoder
 
+        from app.config import get_settings
+        from rag.device import model_kwargs, resolve_device
+
+        settings = get_settings()
         model_path = str(LOCAL_MODEL_DIR) if LOCAL_MODEL_DIR.exists() else MODEL_NAME
-        self._model = CrossEncoder(model_path)
+        self.device = resolve_device(settings.rerank_device)
+        # 关键：半精度必须在 from_pretrained 阶段生效。先按 fp32 建好再 .to(cuda)
+        # 会在搬权重时额外要一份临时显存（实测 978MB），4GB 卡就是这么炸的。
+        # 和 BGE-M3 同开时两个模型各 ~1.15GB，合计 2.3GB 才塞得进 4GB。
+        self._model = CrossEncoder(
+            model_path,
+            device=self.device,
+            model_kwargs=model_kwargs(self.device, settings.gpu_fp16),
+        )
         self.model_path = model_path
 
     def rerank(self, query: str, hits: list[SearchHit], top_k: int) -> list[SearchHit]:
