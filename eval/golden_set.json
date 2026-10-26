@@ -7,8 +7,8 @@
   },
   "stats": {
     "total": 29,
-    "answerable": 19,
-    "refusal": 10
+    "answerable": 18,
+    "refusal": 11
   },
   "items": [
     {
@@ -175,12 +175,10 @@
     },
     {
       "q": "StateBackend 这个类在文档里是干啥用的？",
-      "pages": [
-        19
-      ],
-      "reference": "StateBackend 是用来初始化 backend 实例的类，出现在向量库或智能体状态管理的上下文中。",
-      "expect": "answerable",
-      "kind": "answerable"
+      "pages": null,
+      "reference": null,
+      "expect": "refuse",
+      "kind": "应拒-主题内缺内容"
     },
     {
       "q": "LangChain Deep Agents 中 retrieval tool 的 timeout 参数默认值是多少？",

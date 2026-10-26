@@ -233,6 +233,44 @@ function highlightSource(i) {
   if (target) target.scrollIntoView({ block: "nearest", behavior: "smooth" });
 }
 
+/* 模型偶尔会凭印象写出不存在的引用编号（只有 5 条来源却写 [6]），
+   点上去没有任何反应，看起来像坏了。后端在非流式接口里已经兜过底，
+   但流式是边生成边推 token，"[6]" 可能被拆成 "[","6","]" 三块，
+   逐块清洗不可靠——所以放在 done 事件里对整段文本做一次。
+   ``` 围栏内的内容跳过：代码里的 chunks[0]、docs[12] 是数组下标，不是引用。 */
+function clampCitations(text, n) {
+  // 前面紧贴英文标识符的不是引用（chunks[0]、docs[12] 是数组下标）
+  const clean = (seg) =>
+    seg
+      .replace(/(?<![A-Za-z0-9_])\[(\d{1,3})\]/g, (m, d) => {
+        const k = Number(d);
+        return k >= 1 && k <= n ? m : "";
+      })
+      // 剥掉编号后留下的空档：多余空格、"、、"、"说明[9] 越界"里的空格
+      .replace(/[ \t]{2,}/g, " ")
+      .replace(/、\s*([、）)])/g, "$1")
+      .replace(/(?<=[\u4e00-\u9fff])[ \t]+(?=[\u4e00-\u9fff])/g, "")
+      // "（如 [1][2]）" 剥完剩 "（如 ）"，整个括号删掉（别误删还在生效的 "（见[1]）"）
+      .replace(/[（(]\s*(如|例如|见|参见|参考)[\s、，]*[）)]/g, "")
+      .replace(/[（(]\s*[）)]/g, "")
+      .replace(/[ \t]+([，。、；：！？）】」,])/g, "$1");
+  // 空格压缩只能在非代码段做，否则会把代码缩进压平
+  return text
+    .split(/(```[\s\S]*?```)/)
+    .map((seg, i) => (i % 2 ? seg : clean(seg)))
+    .join("");
+}
+
+/* 拒答是生成之后才知道的，此时来源已经推到右栏了，撤不回来。
+   与其假装没有来源，不如标清楚：这些材料检索到了，但不足以回答。 */
+function markSourcesUnsupporting() {
+  if (!sources.length) return;
+  const note = document.createElement("p");
+  note.className = "src-note";
+  note.textContent = "以下材料是检索到的，但不足以回答这个问题（未支撑答案）";
+  els.sourceList.prepend(note);
+}
+
 async function ask(question) {
   if (busy || !question.trim()) return;
 
@@ -271,11 +309,16 @@ async function ask(question) {
       paint();
     } else if (evt.type === "done") {
       refused = !!evt.refused;
+      // 越界引用在这里一次性剥掉（流式 token 来不及逐块处理）
+      acc = clampCitations(acc, sources.length);
       bubble.innerHTML = renderMarkdown(acc || "（空）");
       linkifyCitations(bubble);
       // refused=true 是检索门槛拦的；这里再兜一层：模型按 prompt 规矩
       // 自己说"无法回答"时后端不知道（refused 仍是 false），前端按文本补标黄。
-      if (refused || /无法回答|无法根据现有资料/.test(acc)) bubble.classList.add("refused");
+      if (refused || /无法回答|无法根据现有资料/.test(acc)) {
+        bubble.classList.add("refused");
+        markSourcesUnsupporting();
+      }
       // 通用知识回答（非知识库内容）：虚线框，暗示这段没有出处
       if (/^（以下不属于知识库内容）/.test(acc.trim())) bubble.classList.add("general");
       const e = evt.elapsed || {};

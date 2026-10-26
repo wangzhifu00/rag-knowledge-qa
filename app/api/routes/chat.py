@@ -15,6 +15,7 @@ SSE 本质就是一个不关闭的 HTTP 响应，浏览器用 fetch 读 body 流
 
 import asyncio
 import json
+import re
 import time
 
 from fastapi import APIRouter
@@ -127,6 +128,49 @@ def _to_sources(hits: list[SearchHit]) -> list[SourceOut]:
     ]
 
 
+_CITATION = re.compile(r"(?<![A-Za-z0-9_])\[(\d{1,3})\]")
+# 前面紧贴英文标识符的不算引用编号（如 chunks[0]、docs[12] 是数组下标）；
+# 中文不受影响——"说明[1]"这种正是真实引用，必须保留。
+
+
+def _clamp_citations(answer: str, source_count: int) -> str:
+    """剥掉指向不存在来源的引用编号。
+
+    模型会凭印象写 [6]，而这次只返回了 5 条来源——前端把 [n] 渲染成可点击的
+    角标，越界的那个点了没反应，看起来像坏了。prompt 里要求过编号范围，
+    但模型每次数得都不一样（同一题两次分别写出 [5] 和 [6]），
+    所以这类"格式正确性"的事不能指望 prompt，用代码兜底。
+    source_count=0（拒答/门槛拦下）时全部剥掉：此时一条来源都没给，
+    留着编号等于指着空气说话。
+    """
+    if not answer:
+        return answer
+
+    def _fix(m: re.Match) -> str:
+        k = int(m.group(1))
+        return m.group(0) if 1 <= k <= source_count else ""
+
+    def _clean(segment: str) -> str:
+        # 代码块里 chunks[0]、docs[12] 是数组下标，不是引用编号，不能动
+        cleaned = _CITATION.sub(_fix, segment)
+        if cleaned == segment:
+            return segment
+        cleaned = re.sub(r"[ \t]{2,}", " ", cleaned)
+        cleaned = re.sub(r"、\s*([、）)])", r"\1", cleaned)
+        # 剥掉编号后中文之间可能多出一个空格（"说明[9] 越界" → "说明 越界"）
+        cleaned = re.sub(r"(?<=[\u4e00-\u9fff])[ \t]+(?=[\u4e00-\u9fff])", "", cleaned)
+        # "语句（如 [1][2]）" 剥完变成 "语句（如 ）"：整个括号删掉。
+        # 只在括号里只剩提示词+空白时匹配，别误删还在生效的 "（见[1]）"
+        cleaned = re.sub(r"[（(]\s*(如|例如|见|参见|参考)[\s、，]*[）)]", "", cleaned)
+        cleaned = re.sub(r"[（(]\s*[）)]", "", cleaned)
+        cleaned = re.sub(r"[ \t]+([，。、；：！？）】」,])", r"\1", cleaned)
+        return cleaned
+
+    # 按 ``` 围栏切段：奇数位是代码块，原样保留
+    parts = re.split(r"(```[\s\S]*?```)", answer)
+    return "".join(p if i % 2 else _clean(p) for i, p in enumerate(parts))
+
+
 # ---------------------------------------------------------------- 同步接口
 @router.post("/chat", response_model=ChatResponse, summary="知识库问答（RAG）")
 def chat(req: ChatRequest) -> ChatResponse:
@@ -172,9 +216,12 @@ def chat(req: ChatRequest) -> ChatResponse:
     # 拒答由模型自己决定（按 prompt 的固定开头判断），后端只做识别
     refused = answer.lstrip().startswith("根据现有资料无法回答")
 
+    sources = [] if refused else _to_sources(hits)
+    answer = _clamp_citations(answer, len(sources))
+
     return ChatResponse(
         answer=answer,
-        sources=[] if refused else _to_sources(hits),
+        sources=sources,
         question=req.question,
         mode=req.mode,
         refused=refused,
@@ -273,6 +320,9 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
             "below_threshold": below,
         })
 
+        # 来源必须"先推"：等生成完再推，用户已经在读答案了，右栏还是空的。
+        # 代价是拒答时无法撤回（拒答是生成之后才知道的），所以流式这条路上
+        # 来源会留在界面上——前端会把它们标成"未支撑答案"，而不是当成出处。
         yield _sse({
             "type": "sources",
             "sources": [] if below else [s.model_dump() for s in _to_sources(hits)],
