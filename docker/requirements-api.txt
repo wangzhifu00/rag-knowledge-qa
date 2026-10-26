@@ -1,0 +1,31 @@
+# ============================================================
+# 容器运行期依赖（服务跑起来真正需要的）
+#
+# 和根目录 requirements.txt 的区别：这里**不含评估期的重依赖**
+# （ragas / langchain-openai / datasets）。它们只在本地跑
+# scripts/eval_*.py 时用得上，进了镜像只会让体积多出约 1GB、
+# 构建时间多几分钟，而服务本身一次都不会 import。
+#
+# 装 torch 的步骤在 Dockerfile 里单独做（要指 CPU 版索引），
+# 不写在下面——pypi 上 Linux 默认给的是 CUDA 版，2.5GB，
+# 容器里没显卡纯属浪费。
+# ============================================================
+
+python-dotenv>=1.0.0
+qdrant-client>=1.10.0
+fastembed>=0.3.0
+openai>=1.50.0
+psycopg[binary]>=3.2.0
+redis>=5.0.0
+pypdf>=5.0.0
+fastapi>=0.115.0
+uvicorn[standard]>=0.30.0
+pydantic-settings>=2.4.0
+httpx>=0.27.0
+sqlalchemy[asyncio]>=2.0.30
+asyncpg>=0.29.0
+alembic>=1.13.0
+python-multipart>=0.0.9
+rank-bm25>=0.2.2
+jieba>=0.42.1
+sentence-transformers>=3.0

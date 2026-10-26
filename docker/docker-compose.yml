@@ -1,11 +1,70 @@
 # ============================================================
-# RAG Knowledge QA - 基础环境编排
-# 组件: PostgreSQL 16 + Redis 7 + Qdrant (向量库) + Adminer (DB 可视化)
-# 启动: docker compose up -d
-# 验证: bash scripts/verify.sh
+# RAG Knowledge QA - 全栈编排
+# 组件: app (FastAPI) + PostgreSQL 16 + Redis 7 + Qdrant + Adminer
+# 启动: docker compose -f docker/docker-compose.yml up -d --build
+# 界面: http://127.0.0.1:8000/ui/
+#
+# name 显式写死：compose 默认拿「文件所在目录名」当项目名（这里是 docker），
+# 一改目录结构数据卷就换名、旧数据全"消失"。锁定成 rag-knowledge-qa，
+# 和之前手动敲出来的 rag-knowledge-qa_postgres_data 卷保持对齐。
 # ============================================================
 
+name: rag-knowledge-qa
+
 services:
+
+  # ---------- app: FastAPI 应用本体 ----------
+  # 一条命令起全栈：docker compose -f docker/docker-compose.yml up -d --build
+  app:
+    build:
+      context: ..                  # 构建上下文是项目根（Dockerfile 在根目录）
+      dockerfile: Dockerfile
+    image: rag-knowledge-qa:latest
+    container_name: rag-app
+    restart: unless-stopped
+
+    # 密钥、模型名、LLM 选择都从 .env 来，不烤进镜像
+    env_file:
+      - ../.env
+
+    environment:
+      # ★ 唯一必须覆盖的一组：容器里的 "localhost" 指容器自己，
+      #   要连兄弟容器得用服务名。这三个变量把 app 从"连本机"改成"连邻居"。
+      #   （pydantic-settings 里环境变量优先级高于 .env 文件，所以这里能盖住）
+      POSTGRES_HOST: postgres
+      QDRANT_HOST: qdrant
+      REDIS_HOST: redis
+      # 容器没接 GPU，auto 会自动退到 CPU；显式写死是为了日志里一眼看得出跑在哪
+      EMBEDDING_DEVICE: cpu
+      RERANK_DEVICE: cpu
+      # CPU 上 fp16 没有加速指令，转了反而更慢，关掉
+      GPU_FP16: "false"
+
+    ports:
+      - "${APP_PORT:-8000}:8000"
+
+    volumes:
+      # 6.5GB 模型不进镜像：只读挂载宿主机目录。
+      # 换模型 = 改宿主机 models/ + 跑 reindex，不用 rebuild 镜像。
+      - ../models:/app/models:ro
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+
+    healthcheck:
+      # 用 python 自带的 urllib，镜像里就不用为了健康检查装 curl
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/health', timeout=3)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      # 冷启动要加载 bge-m3 + reranker：CPU 上约 40~60 秒，
+      # 给 180 秒宽限期，否则启动阶段会被判定 unhealthy 反复重启
+      start_period: 180s
 
   # ---------- PostgreSQL: 元数据/会话/文档记录 ----------
   postgres:

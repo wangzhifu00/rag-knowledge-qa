@@ -14,6 +14,13 @@
 *.txt text eol=lf
 *.env* text eol=lf
 
+# 无扩展名的 Docker 文件单独点名(* text=auto 管不到它们)
+# Dockerfile 的 RUN 用反斜杠续行，CRLF 会让 "\" 去转义 \r，命令拼错；
+# .dockerignore 按行匹配规则，行尾多一个 \r 会让 "models/" 认不出来，
+# 结果是别人 clone 到 Windows 后构建上下文又变回 6.5GB
+Dockerfile      text eol=lf
+.dockerignore   text eol=lf
+
 # Windows 专属脚本保持 CRLF(记事本/notepad 兼容)
 *.ps1  text eol=crlf
 *.bat  text eol=crlf

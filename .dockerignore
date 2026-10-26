@@ -1,0 +1,42 @@
+# ============================================================
+# 构建上下文裁剪：只把"跑服务需要的东西"送进镜像
+# 没有这个文件的话，docker build 会把 6.5GB 模型、.venv、.git
+# 全打进构建上下文，构建能从 2 分钟变成 10 分钟
+# ============================================================
+
+# --- 体积大头：模型由 compose 只读挂载，不进镜像 ---
+models/
+
+# --- 本地开发环境 ---
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# --- 密钥绝不进镜像层（.env 由 compose 的 env_file 注入）---
+.env
+.env.*
+!.env.example
+
+# --- 版本库与编辑器 ---
+.git/
+.gitignore
+.idea/
+.vscode/
+
+# --- 只在本地/评估期用的东西，容器里用不上 ---
+eval/
+docs/
+tests/
+scripts/eval_*.py
+scripts/gen_evalset.py
+stream_tmp.txt
+
+# --- 其它杂项 ---
+*.md
+!README.md
+.DS_Store
+Thumbs.db

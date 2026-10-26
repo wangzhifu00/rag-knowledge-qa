@@ -283,56 +283,77 @@ recall 的这次反转是**真信号**，不是噪声：逐题看，降分集中
 
 ### 0. 前置要求
 
-- Docker Desktop（PostgreSQL / Redis / Qdrant 跑在容器里）
-- Python 3.11+（开发环境为 3.13）
+- Docker Desktop（应用本体和 PostgreSQL / Redis / Qdrant 全在容器里）
 - 一个 OpenAI 协议兼容的 LLM API Key（DeepSeek / Qwen / GLM 均可）
-- （可选）NVIDIA GPU + CUDA 版 PyTorch，精排提速约 8 倍；CPU 也能跑
+- 只有本地开发才需要：Python 3.11+、NVIDIA GPU（可选，精排提速约 8 倍）
 
-### 1. 起依赖服务
+### 方式 A：一条命令起全栈（推荐，演示 / 交付）
 
 ```bash
-docker compose -f docker/docker-compose.yml up -d
+cp .env.example .env        # 填 LLM_API_KEY，以及和它配套的 BASE_URL
 ```
 
-### 2. 配置并安装依赖
+模型 6.5GB，**不进镜像**（由容器只读挂载），要先下到宿主机：
 
 ```bash
-cp .env.example .env        # 填入 LLM API Key
-pip install -r requirements.txt
-```
-
-下载本地模型（`models/` 在 .gitignore 里，首次要自己拉；国内走 ModelScope
-比 HuggingFace 稳）：
-
-```bash
+# 国内走 ModelScope 比 HuggingFace 稳；models/ 在 .gitignore 里
 modelscope download --model BAAI/bge-m3 --local-dir models/bge-m3
 modelscope download --model BAAI/bge-reranker-v2-m3 --local-dir models/bge-reranker-v2-m3
 ```
 
-`models/bge-m3/` 不存在时会退回用 `BAAI/bge-small-zh-v1.5`（fastembed 自带，
-ONNX、512 维、几秒加载），能跑但跨语言效果差一截，见上面的评估表。
-
-### 3. 入库文档
-
 ```bash
-python scripts/ingest.py data/langchain_intro.pdf
+docker compose -f docker/docker-compose.yml up -d --build
 ```
 
-或者直接在网页里上传 PDF（后台异步入库，状态自动刷新）。
-
-### 4. 启动并访问
-
-```bash
-uvicorn app.main:app --reload --port 8000
-```
+首次构建实测约 **30 分钟**（国内网络：CPU 版 torch 约 12 分钟、18 个运行期依赖约
+16 分钟，镜像 2.4GB）；之后只改业务代码再 `up -d --build` 只要几十秒，依赖层全走缓存。
 
 | 入口 | 地址 |
 |------|------|
 | **网页问答界面** | http://127.0.0.1:8000/ui/ |
 | API 文档（Swagger） | http://127.0.0.1:8000/docs |
 | 健康检查 | http://127.0.0.1:8000/health |
+| Adminer（PG 可视化） | http://127.0.0.1:8080 |
 
-### 5. 复现评估（可选）
+首次启动要加载 bge-m3 + reranker，CPU 上约 40~60 秒，跟一下日志就知道好没好：
+
+```bash
+docker compose -f docker/docker-compose.yml logs -f app
+```
+
+库是空的（全新克隆）就入库一次，也可以在网页里直接上传 PDF：
+
+```bash
+docker compose -f docker/docker-compose.yml exec app python scripts/ingest.py data/langchain_intro.pdf
+```
+
+两个刻意的取舍，写在这里免得后面踩：
+
+- **容器默认跑 CPU**。bge-m3 和 reranker 各 568M，CPU 上单次问答约 2~5 秒，
+  演示够用。要走显卡得装 nvidia-container-toolkit、在 app 服务加
+  `deploy.resources.reservations.devices`，4GB 显存还得靠 fp16（`GPU_FP16=true`）
+  ——想调性能就直接用方式 B，改动反馈更快。
+- **镜像里没有评估依赖**（ragas / langchain-openai，省约 1GB）。`scripts/eval_*.py`
+  在容器里跑不起来是设计如此，评估一律在本地环境做。
+
+### 方式 B：本地开发（改代码、跑评估）
+
+```bash
+pip install -r requirements.txt
+python scripts/ingest.py data/langchain_intro.pdf
+uvicorn app.main:app --reload --port 8000
+```
+
+依赖服务（PG / Redis / Qdrant）仍然可以用 compose 起，只起中间件不起 app：
+
+```bash
+docker compose -f docker/docker-compose.yml up -d postgres redis qdrant
+```
+
+`models/bge-m3/` 不存在时会退回 `BAAI/bge-small-zh-v1.5`（fastembed 自带，
+ONNX、512 维、几秒加载），能跑但跨语言效果差一截，见上面的评估表。
+
+### 复现评估（可选）
 
 ```bash
 # 重建向量库：换 embedding 模型后必做（原文在 PG 不动，只重算向量）
@@ -520,7 +541,11 @@ rag-knowledge-qa/
 │   └── generator.py          # Prompt 组装 + 同步/流式生成
 ├── frontend/                 # 原生单页界面(index.html/style.css/app.js)
 ├── scripts/                  # ingest / reindex / gen_evalset / eval_* / ask / drop_document
-├── docker/docker-compose.yml # PG + Redis + Qdrant + Adminer
+├── Dockerfile                # 应用镜像(CPU 版 torch、依赖分两份、模型挂载不打进镜像)
+├── .dockerignore             # 裁掉 models/.venv/.env，免得构建上下文上百 MB
+├── docker/
+│   ├── docker-compose.yml    # app + PG + Redis + Qdrant + Adminer（一条命令起全栈）
+│   └── requirements-api.txt  # 运行期依赖（不含 ragas，省约 1GB）
 ├── data/                     # 示例文档
 ├── docs/                     # 架构说明 + 界面截图
 └── eval/                     # 评估数据
