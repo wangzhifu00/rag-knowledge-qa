@@ -20,6 +20,7 @@
 用法（项目根目录）：
     python scripts/gen_evalset.py                 # 生成 ~40 道候选题
     python scripts/gen_evalset.py --n 30          # 指定可答题数量
+    python scripts/gen_evalset.py --requalify     # 只重算质检列（不花 LLM 钱）
     python scripts/gen_evalset.py --finalize      # 人工筛完，转成正式题集
 
 成本：每块一次 LLM 调用（40 次左右，几分钱）。
@@ -28,6 +29,7 @@
 import argparse
 import asyncio
 import csv
+import io
 import json
 import re
 import sys
@@ -180,9 +182,16 @@ def pick_chunks(chunks: list, n: int) -> list:
 
 
 def build_qc_index(chunks: list, embedder) -> None:
-    """把切好的块灌进临时集合，用来给候选题做免费质检。"""
+    """把切好的块灌进临时集合，用来给候选题做免费质检。
+
+    注意 payload 必须带上原文：质检要回答"文档里到底写没写这件事"，
+    光有页码不够——人是靠读那段话做判断的（第一版漏了 text，
+    结果"最相关材料"列全是空的，等于让人工盲筛）。
+    """
     client = get_client()
-    client.recreate_collection(
+    if client.collection_exists(QC_COLLECTION):
+        client.delete_collection(QC_COLLECTION)
+    client.create_collection(
         collection_name=QC_COLLECTION,
         vectors_config=models.VectorParams(size=embedder.dim,
                                            distance=models.Distance.COSINE),
@@ -191,14 +200,14 @@ def build_qc_index(chunks: list, embedder) -> None:
     client.upsert(collection_name=QC_COLLECTION, points=[
         models.PointStruct(
             id=c.chunk_index, vector=v,
-            payload={"page_numbers": c.page_numbers},
+            payload={"page_numbers": c.page_numbers, "text": c.text},
         )
         for c, v in zip(chunks, vectors)
     ])
 
 
 def qc_one(question: str, embedder) -> tuple[float, list[int], str]:
-    """本地跑一次向量检索：返回 (top1 相似度, top1 页码, top1 原文前 60 字)。
+    """本地跑一次向量检索：返回 (top1 相似度, top1 页码, top1 原文前 200 字)。
 
     用途：人工筛题时看这几列——
       可答题却没命中标注页 → 要么标注错了，要么题太难，值得重点看
@@ -213,7 +222,27 @@ def qc_one(question: str, embedder) -> tuple[float, list[int], str]:
         return 0.0, [], ""
     return (points[0].score,
             points[0].payload.get("page_numbers", []),
-            points[0].payload.get("text", "")[:60].replace("\n", " "))
+            " ".join(points[0].payload.get("text", "").split())[:200])
+
+
+def _apply_qc(row: dict, embedder) -> dict:
+    """给一行候选填质检三列（top1 分 / 是否命中 / 最相关原文）。
+
+    可答题的 `source` 是"出题用的那块"，保留不动（知道题目从哪来有用）；
+    应拒答题必须换成"检索到的最相关块"——人工就是靠读它判断
+    "文档里其实写了没有"，否则这道题成立不成立根本没法判。
+    """
+    score, hit_pages, top_text = qc_one(row["question"], embedder)
+    row["qc_score"] = score
+    if row["pages"] is None:
+        row["qc_hit"] = "需人工确认"
+        where = "/".join(map(str, hit_pages)) or "?"
+        row["source"] = f"[最相关·第{where}页] {top_text}"
+    elif set(hit_pages) & set(row["pages"]):
+        row["qc_hit"] = "✅命中"
+    else:
+        row["qc_hit"] = f"❌命中[{','.join(map(str, hit_pages))}]"
+    return row
 
 
 async def gen_one(client: AsyncOpenAI, sem: asyncio.Semaphore,
@@ -286,8 +315,58 @@ def write_csv(rows: list[dict]) -> None:
                 i, row["kind"], row["question"],
                 "/".join(map(str, row["pages"])) if row["pages"] else "",
                 row["answer"], f"{row['qc_score']:.3f}", row["qc_hit"],
-                row["source"], "y",
+                row["source"], row.get("keep", "y"),
             ])
+
+
+def _decode(raw: bytes) -> tuple[str, str]:
+    """把候选表的字节解成文本，返回 (文本, 实际编码)。
+
+    为什么要兼容两种编码：脚本写出去是 UTF-8 with BOM（Excel 双击不乱码），
+    但用 Excel 改完 Ctrl+S，Excel 会用**系统 ANSI 编码**另存（中文 Windows
+    就是 GBK/CP936）并把 BOM 丢掉。之后再在 VS Code 里打开就全是乱码
+    （VS Code 默认按 UTF-8 解码），而 finalize 若只认 utf-8-sig 会直接崩。
+    所以读的时候两种都试——编码是人手动环节的遗留问题，不该让它中断流程。
+    """
+    if raw[:3] == b"\xef\xbb\xbf":
+        return raw.decode("utf-8-sig"), "utf-8-sig"
+    try:
+        return raw.decode("utf-8"), "utf-8"
+    except UnicodeDecodeError:
+        pass
+    try:
+        return raw.decode("gb18030"), "gb18030"
+    except UnicodeDecodeError:
+        raise SystemExit(
+            f"{CAND_CSV} 既不是 UTF-8 也不是 GBK，认不出来。"
+            f"用记事本打开 → 另存为 → 编码选 UTF-8，再跑一次"
+        )
+
+
+def normalize_encoding() -> None:
+    """把候选表转回 UTF-8(BOM)：让 VS Code 能正常显示、git diff 能看。
+
+    Excel 另存成的 GBK 不影响 finalize（读的时候已兼容），
+    但影响人眼看——转回来省得每次都要手动切编码。
+    """
+    raw = CAND_CSV.read_bytes()
+    if raw[:3] == b"\xef\xbb\xbf":
+        return
+    text, enc = _decode(raw)
+    try:
+        CAND_CSV.write_text(text, encoding="utf-8-sig")
+        print(f"（候选表原来是 {enc} 编码，已转回 UTF-8，VS Code 里能正常看了）")
+    except OSError:
+        # Excel 正开着这个文件会锁住，转不了也无所谓，不影响读取
+        print(f"（候选表是 {enc} 编码但正被占用，跳过转码——不影响 --finalize）")
+
+
+def read_candidates() -> list[dict]:
+    """读回候选表（UTF-8 / GBK 都行）。"""
+    text, enc = _decode(CAND_CSV.read_bytes())
+    if enc.startswith("gb"):
+        print(f"（检测到候选表是 {enc} 编码——Excel 另存过。已按该编码正确读取）")
+    return list(csv.DictReader(io.StringIO(text, newline="")))
 
 
 def do_generate(n_answer: int) -> None:
@@ -333,18 +412,7 @@ def do_generate(n_answer: int) -> None:
     # 免费质检：每题在本地跑一次向量检索，把分数和命中写进表里
     print("本地质检中...")
     for row in rows:
-        score, hit_pages, top_text = qc_one(row["question"], embedder)
-        row["qc_score"] = score
-        if row["pages"] is None:
-            # 应拒答题 top1 高是常态：关键词与语料重合、但材料没给答案。
-            # 机器判不了"文档里到底有没有答案"，所以把最相关的那块原文
-            # 一起放进表里，人工扫一眼就能定。
-            row["qc_hit"] = "需人工确认"
-            row["source"] = f"[最相关·第{'/'.join(map(str, hit_pages))}页] {top_text}"
-        elif set(hit_pages) & set(row["pages"]):
-            row["qc_hit"] = "✅命中"
-        else:
-            row["qc_hit"] = f"❌命中[{','.join(map(str, hit_pages))}]"
+        _apply_qc(row, embedder)
 
     write_csv(rows)
     get_client().delete_collection(QC_COLLECTION)
@@ -357,10 +425,59 @@ def do_generate(n_answer: int) -> None:
     print("  · 目标是 30 题上下（可答题多留一些，应拒答留 8~10 道即可）")
     print("  · 「检索命中」列是质检结果：可答题 ❌ 的、应拒答要看的「最相关」原文")
     print("  · 确认完运行：python scripts/gen_evalset.py --finalize")
+    print("  · 提示：在 Excel 里 Ctrl+S 会存成 GBK（VS Code 打开乱码）。"
+          "finalize 两种编码都能读，不用管；想在 VS Code 里看就先跑 --finalize，它会转回 UTF-8")
     if GOLDEN.exists():
         old = json.loads(GOLDEN.read_text(encoding="utf-8"))
         print(f"\n⚠️ {GOLDEN} 已存在（{old['stats']['total']} 题），"
               f"筛完不跑 --finalize 的话评估用的还是这套旧题")
+
+
+def _row_from_csv(r: dict) -> dict:
+    """CSV 一行 → 内部 row 结构（题目原样搬，质检列待重算）。"""
+    page_text = (r.get("标注页码") or "").strip()
+    pages = ([int(p) for p in re.split(r"[/,，、\s]+", page_text) if p]
+             if page_text else None)
+    return {
+        "kind": (r.get("类型") or "").strip(),
+        "question": (r.get("问题") or "").strip(),
+        "answer": (r.get("参考答案") or "").strip(),
+        "pages": pages,
+        "qc_score": 0.0,
+        "qc_hit": "",
+        "source": (r.get("来源块摘要") or "").strip(),
+        # 人工筛的结果必须原样带回去，否则重算质检会把筛选白做
+        "keep": (r.get("保留") or "y").strip(),
+    }
+
+
+def do_requalify() -> None:
+    """只重算质检列，不重新出题（零 LLM 成本）。
+
+    什么时候用：质检逻辑改了（比如"最相关原文"要显示更长）、
+    或者想拿新切分参数 / 新 embedding 模型重算一次 top1 分数。
+    题目、「保留」列、参考答案都原样保留。
+    """
+    if not CAND_CSV.exists():
+        raise SystemExit(f"找不到 {CAND_CSV}，先跑 python scripts/gen_evalset.py")
+
+    rows = [_row_from_csv(r) for r in read_candidates()]
+    pages = clean_pages(parse_pdf(PDF))
+    chunks = chunk_pages(pages, chunk_size=300, overlap=30)
+    embedder = get_embedder()
+    print(f"重建质检索引：{len(chunks)} 块 ...")
+    build_qc_index(chunks, embedder)
+
+    print(f"重算 {len(rows)} 道题的质检列 ...")
+    for row in rows:
+        _apply_qc(row, embedder)
+    write_csv(rows)
+    get_client().delete_collection(QC_COLLECTION)
+
+    filled = sum(1 for r in rows if r["pages"] is None and "]" in r["source"]
+                 and r["source"].split("]")[-1].strip())
+    print(f"已更新 {CAND_CSV}：应拒答题里有 {filled} 道填上了最相关原文")
+    print("接下来：python scripts/gen_evalset.py --finalize")
 
 
 def do_finalize() -> None:
@@ -368,28 +485,28 @@ def do_finalize() -> None:
     if not CAND_CSV.exists():
         raise SystemExit(f"找不到 {CAND_CSV}，先跑 python scripts/gen_evalset.py")
 
+    normalize_encoding()
     items, dropped = [], 0
-    with CAND_CSV.open(encoding="utf-8-sig", newline="") as f:
-        for row in csv.DictReader(f):
-            if str(row.get("保留", "")).strip().lower() in ("n", "no", "0", "否"):
-                dropped += 1
-                continue
-            question = (row.get("问题") or "").strip()
-            if not question:
-                dropped += 1
-                continue
-            page_text = (row.get("标注页码") or "").strip()
-            pages = ([int(p) for p in re.split(r"[/,，、\s]+", page_text) if p]
-                     if page_text else None)
-            kind = (row.get("类型") or "").strip()
-            items.append({
-                "q": question,
-                "pages": pages,
-                "reference": (row.get("参考答案") or "").strip() or None,
-                "expect": "answerable" if pages else (
-                    "general" if "完全无关" in kind else "refuse"),
-                "kind": kind,
-            })
+    for row in read_candidates():
+        if str(row.get("保留", "")).strip().lower() in ("n", "no", "0", "否"):
+            dropped += 1
+            continue
+        question = (row.get("问题") or "").strip()
+        if not question:
+            dropped += 1
+            continue
+        page_text = (row.get("标注页码") or "").strip()
+        pages = ([int(p) for p in re.split(r"[/,，、\s]+", page_text) if p]
+                 if page_text else None)
+        kind = (row.get("类型") or "").strip()
+        items.append({
+            "q": question,
+            "pages": pages,
+            "reference": (row.get("参考答案") or "").strip() or None,
+            "expect": "answerable" if pages else (
+                "general" if "完全无关" in kind else "refuse"),
+            "kind": kind,
+        })
 
     n_ans = sum(1 for i in items if i["pages"])
     golden = {
@@ -412,10 +529,14 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=40, help="生成多少道可答题（默认40）")
     ap.add_argument("--finalize", action="store_true",
                     help="读回人工筛过的 CSV，生成 eval/golden_set.json")
+    ap.add_argument("--requalify", action="store_true",
+                    help="只重算质检列（不重新出题，不花 LLM 钱）")
     args = ap.parse_args()
 
     if args.finalize:
         do_finalize()
+    elif args.requalify:
+        do_requalify()
     else:
         do_generate(args.n)
 

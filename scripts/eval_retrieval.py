@@ -20,7 +20,9 @@
   hit@1      第一条就命中标准页的比例（answerable 题）
   hit@5      前 5 条里含标准页的比例（answerable 题）
   MRR        首个命中位置的倒数平均，反映"排得靠不靠前"
-  拒答正确率  库里没答案的题，top1 相似度低于门槛被判拒的比例
+  无答案题拦住率  库里没答案的题（应拒答+应通用答），top1 低于门槛
+                被拦下的比例——拦住 = 材料置空，模型要么明确拒答，
+                要么改用自身知识回答并标注
 
 做法：按指定参数把文档重建成临时集合（eval_tmp，不碰正式集合），
 向量/混合两种模式各跑一遍全部题目，最后给出对比表和阈值校准建议。
@@ -90,10 +92,17 @@ def load_testset(arg: str) -> tuple[list[dict], str]:
         raise SystemExit(f"题集文件不存在：{path}")
 
     data = json.loads(path.read_text(encoding="utf-8"))
-    items = [{"q": i["q"], "pages": i.get("pages")} for i in data["items"]]
+    items = [{"q": i["q"], "pages": i.get("pages"),
+              "expect": i.get("expect") or ("refuse" if i.get("pages") is None
+                                            else "answerable")}
+             for i in data["items"]]
     n_ans = sum(1 for i in items if i["pages"])
-    return items, (f"{path}｜{len(items)} 题"
-                   f"（{n_ans} 有答案 + {len(items) - n_ans} 应拒答）")
+    n_ref = sum(1 for i in items if i["expect"] == "refuse")
+    n_gen = sum(1 for i in items if i["expect"] == "general")
+    note = f"{n_ans} 有答案 + {n_ref} 应拒答"
+    if n_gen:
+        note += f" + {n_gen} 应通用答"
+    return items, f"{path}｜{len(items)} 题（{note}）"
 
 
 def build_index(client: QdrantClient, embedder, chunk_size: int, overlap: int,
@@ -161,12 +170,20 @@ def evaluate_mode(client: QdrantClient, embedder, mode: str) -> dict:
             else best_vector_score(hits)
 
         if golden is None:
-            # 应拒答题：top1 分低于门槛才算对
-            refused = top1 < threshold
+            # 无答案题分两种，但**检索层**对它们的要求是一样的：top1 必须低于
+            # 门槛。差别只在答案层——
+            #   expect=refuse  → 主题内但材料没写，正确行为是明确拒答
+            #   expect=general → 与本库无关的通用问题（写诗、问天气），
+            #                    正确行为是"检索不到材料 → 用模型自身知识回答
+            #                    并标注不属于知识库"，而不是拒答
+            # 所以这里合并统计"有没有被门槛拦住"，但明细里分开标注，
+            # 避免看数字时把"该拒答"和"该通用答"混成一件事。
+            gated = top1 < threshold
             stats["n_refusal"] += 1
-            stats["refusal_ok"] += int(refused)
+            stats["refusal_ok"] += int(gated)
             neg_scores.append(top1)
-            details.append((q, "应拒答", "✅拒" if refused else "❌未拒", top1))
+            label = "应通用答" if item.get("expect") == "general" else "应拒答"
+            details.append((q, label, "✅拦住" if gated else "❌未拦住", top1))
             continue
 
         # 有答案题：命中判定 = 结果页码与标准页相交
@@ -247,7 +264,7 @@ def main() -> None:
         for q, golden, tag, top1 in r["details"]:
             print(f"  {tag:<7} top1={top1:.3f}  答案页[{golden}]  {q}")
         print(f"  hit@1={r['hit1']:.0%}  hit@5={r['hit5']:.0%}  "
-              f"MRR={r['mrr']:.3f}  拒答正确率={r['refusal']:.0%}\n")
+              f"MRR={r['mrr']:.3f}  无答案拦住率={r['refusal']:.0%}\n")
 
     # 汇总对比表（≥2 种模式时）
     if len(summary) >= 2:
@@ -259,7 +276,7 @@ def main() -> None:
             ("hit@1", lambda r: f"{r['hit1']:.0%}"),
             ("hit@5", lambda r: f"{r['hit5']:.0%}"),
             ("MRR", lambda r: f"{r['mrr']:.3f}"),
-            ("拒答正确率", lambda r: f"{r['refusal']:.0%}"),
+            ("无答案题拦住率", lambda r: f"{r['refusal']:.0%}"),
         ]
         for label_, fn in rows:
             vals = "  ".join(f"{fn(summary[m]):>14}" for m in summary)

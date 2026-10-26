@@ -1,0 +1,256 @@
+{
+  "version": 1,
+  "corpus": "data/langchain_intro.pdf",
+  "chunk_config": {
+    "chunk_size": 300,
+    "overlap": 30
+  },
+  "stats": {
+    "total": 29,
+    "answerable": 19,
+    "refusal": 10
+  },
+  "items": [
+    {
+      "q": "用大模型做问答机器人时，怎么让它在回答问题的时候还能用上自己训练数据里没有的那些资料？",
+      "pages": [
+        1
+      ],
+      "reference": "给大模型提供推理时的数据访问能力，比如私有数据、最新数据或训练时没包含的数据。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "grading rubrics 这个东西在 deepagents 里最低要什么版本才支持？",
+      "pages": [
+        2
+      ],
+      "reference": "grading rubrics 要求 deepagents>=0.6.5。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "如果让模型不查文档直接回答问题，结果会怎样？",
+      "pages": [
+        3
+      ],
+      "reference": "回答会比较笼统，可能漏掉具体操作建议，或者给出过时的信息。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "LangChain里那个叫‘Search’的步骤，具体是干啥的？",
+      "pages": [
+        4
+      ],
+      "reference": "它构建一个自定义工具，执行向量相似度搜索，并把每个检索到的文本块写入智能体的文件系统。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "为什么要把加载的文档切分成小块？",
+      "pages": [
+        9
+      ],
+      "reference": "因为整个文档太长，超过10万token，很多模型的上下文窗口装不下；即使有些模型能装下，也可能在这么长的文本里找不到需要的信息。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "VectorStore 是用来干啥的？",
+      "pages": [
+        10
+      ],
+      "reference": "VectorStore 用来持久化存储文档块及其嵌入向量，支持相似性搜索，以便在用户提问时检索相关段落。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "这个教程里索引是怎么更新的？是每次运行都重新建，还是只在开始时做一次？",
+      "pages": [
+        11
+      ],
+      "reference": "索引只在教程启动时运行一次。生产环境中建议把向量库保存到磁盘或托管数据库，并在文档更新时按计划刷新。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "search tool 返回的是什么内容？",
+      "pages": [
+        12
+      ],
+      "reference": "search tool 返回文件路径，以便 orchestrator 能委托分析而不把完整 chunk 文本加载进去。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "检索出来的文档片段最后保存到哪个文件夹里了？",
+      "pages": [
+        13
+      ],
+      "reference": "保存在 /retrieved/ 文件夹下。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "RAG_WORKFLOW_INSTRUCTIONS 这个变量是在 agent.py 里定义的吗？",
+      "pages": [
+        14
+      ],
+      "reference": "是的，材料明确说‘Add the orchestrator workflow and subagent prompt templates to : agent.py’，并紧接着给出 RAG_WORKFLOW_INSTRUCTIONS 的定义，说明该变量需添加到 agent.py 中。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "RecursiveCharacterTextSplitter 这个类在文档里是怎么用的？",
+      "pages": [
+        18
+      ],
+      "reference": "文档中展示了导入语句：from langchain_text_splitters import RecursiveCharacterTextSplitter。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "把文档切分成小块的时候，每块最多能有多少个字符，而且相邻两块之间会重复多少个字符？",
+      "pages": [
+        19
+      ],
+      "reference": "每块最多1000个字符，相邻两块之间会重复2个字符。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "backend.upload_files(uploads) 这个函数调用时，uploads 参数的格式具体长什么样？",
+      "pages": [
+        20
+      ],
+      "reference": "uploads 是一个元组列表，每个元组形如 (path, content.encode(\"utf-8\"))，其中 path 是文件路径，content 是文档内容的 UTF-8 字节编码。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "接下来可以怎么把刚做的问答功能和其他工具连起来，比如让AI能实时查Claude、VSCode这些软件的信息？",
+      "pages": [
+        22
+      ],
+      "reference": "可以把它和其它深度智能体能力组合使用，或者通过MCP连接到Claude、VSCode等工具来实现实时回答。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "LangChain 里提到的 RAG 基础组件有哪些？",
+      "pages": [
+        1
+      ],
+      "reference": "文档中明确列出的 RAG 基础组件包括：custom retrieval tools（自定义检索工具）、a （此处原文留空）、（两个连续空格）、和（另一个空格）。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "为什么光靠大语言模型自己没法回答最近刚改过的某个API的问题？",
+      "pages": [
+        2
+      ],
+      "reference": "因为大语言模型本身没有访问你的文档的权限，它只能根据训练数据来回答，而训练数据里可能没有这个最新改动的信息。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "这个教程里用什么工具做向量搜索来检索证据？",
+      "pages": [
+        3
+      ],
+      "reference": "用 vector search tool 做向量搜索来检索证据。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "文档里提到的那些路径中，哪些是跟深度智能体的前端流式处理相关的？",
+      "pages": [
+        18
+      ],
+      "reference": "只有 'oss/python/deepagents/frontend/subagent-streaming' 这一条路径明确涉及深度智能体的前端流式处理。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "StateBackend 这个类在文档里是干啥用的？",
+      "pages": [
+        19
+      ],
+      "reference": "StateBackend 是用来初始化 backend 实例的类，出现在向量库或智能体状态管理的上下文中。",
+      "expect": "answerable",
+      "kind": "answerable"
+    },
+    {
+      "q": "LangChain Deep Agents 中 retrieval tool 的 timeout 参数默认值是多少？",
+      "pages": null,
+      "reference": null,
+      "expect": "refuse",
+      "kind": "应拒-主题内缺内容"
+    },
+    {
+      "q": "文档里提到的 retrieve, offload, delegate 模式，其中 offload 到 filesystem 时用的是什么序列化格式？",
+      "pages": null,
+      "reference": null,
+      "expect": "refuse",
+      "kind": "应拒-主题内缺内容"
+    },
+    {
+      "q": "在 skills-guided retrieval 中，skill 描述文件是否支持 YAML 格式？还是仅限 Python 类定义？",
+      "pages": null,
+      "reference": null,
+      "expect": "refuse",
+      "kind": "应拒-主题内缺内容"
+    },
+    {
+      "q": "RAG 评估阶段用的 grading rubrics，能否配置多级置信度阈值（比如‘强支撑’‘弱支撑’‘未支撑’）？",
+      "pages": null,
+      "reference": null,
+      "expect": "refuse",
+      "kind": "应拒-主题内缺内容"
+    },
+    {
+      "q": "Deep Agents 是否提供内置的 chunk 引用溯源高亮功能（比如在答案中标出哪句话来自 docs/langchain.com 的第几段）？",
+      "pages": null,
+      "reference": null,
+      "expect": "refuse",
+      "kind": "应拒-主题内缺内容"
+    },
+    {
+      "q": "我们公司报销系统对接 LangChain RAG 需要走哪个审批流程？",
+      "pages": null,
+      "reference": null,
+      "expect": "refuse",
+      "kind": "应拒-内部事务"
+    },
+    {
+      "q": "我们团队下周的排班表能用这个 RAG 应用查吗？",
+      "pages": null,
+      "reference": null,
+      "expect": "refuse",
+      "kind": "应拒-内部事务"
+    },
+    {
+      "q": "我们公司的 OA 系统接口文档放在 Deep Agents 的向量库里了吗？",
+      "pages": null,
+      "reference": null,
+      "expect": "refuse",
+      "kind": "应拒-内部事务"
+    },
+    {
+      "q": "量子纠缠能让大模型推理更快吗？",
+      "pages": null,
+      "reference": null,
+      "expect": "general",
+      "kind": "应拒-完全无关"
+    },
+    {
+      "q": "请帮我写一首七言绝句，主题是咖啡和凌晨三点的服务器",
+      "pages": null,
+      "reference": null,
+      "expect": "general",
+      "kind": "应拒-完全无关"
+    }
+  ]
+}
