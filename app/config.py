@@ -60,6 +60,13 @@ class Settings(BaseSettings):
     # 评估脚本跑完 10 题看分布后再校准。环境变量 RERANK_MIN_SCORE 可覆盖。
     rerank_min_score: float = 0.5
 
+    # ---------- 冷启动预热 ----------
+    # 启动时预加载 embedding + reranker 模型，首问检索从 ~25s 降到 <1s。
+    # 代价：每次进程启动多等约 8 秒（GPU 加载 2.2GB reranker）。
+    # 开发时用 --reload 改一次代码就重启一次，建议 .env 里设 WARMUP_ON_START=false；
+    # 部署/演示场景保持 true（默认）。
+    warmup_on_start: bool = True
+
     #把零散字段拼成 psycopg 要的连接串。  psycopg 是 Python 连接 PostgreSQL 数据库最主流的驱动库
     # @property 表示调用时不用加括号：settings.postgres_dsn。
     @property

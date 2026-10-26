@@ -30,10 +30,39 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+
+def _warmup_models() -> None:
+    """把 embedding 和 reranker 实例化一遍，触发模型加载并常驻内存/显存。
+
+    两个模块内部都有进程级单例（get_embedder / get_reranker），
+    这里实例化后，之后的请求直接复用，不再付加载时间。
+    Reranker 的模型在 __init__ 里就加载（CrossEncoder），所以拿到实例即完成预热。
+    """
+    from rag.embedder import get_embedder
+    from rag.reranker import get_reranker
+
+    get_embedder().embed_query("warmup")   # 触发 embedding 模型加载
+    get_reranker()                         # 触发 reranker 模型加载
+
 #FastAPI 新一代的生命周期管理方式
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     logger.info("应用启动，Qdrant=%s", settings.qdrant_url)
+    # 冷启动预热：把 embedding + reranker 模型提前加载进显存。
+    # 不预热的话，第一个用户的第一个问题要替所有人付 ~25s 的模型加载费；
+    # 预热后这笔开销挪到服务启动阶段，首问检索 <1s。
+    # 开发时(--reload 改一次代码就重启一次)可在 .env 设 WARMUP_ON_START=false 关掉。
+    if settings.warmup_on_start:
+        import asyncio
+        import time
+        logger.info("开始预热模型（首次约 8~25 秒，视 GPU/CPU 而定）...")
+        t0 = time.time()
+        try:
+            # to_thread: 模型加载是阻塞的 CPU/磁盘活，不能卡事件循环
+            await asyncio.to_thread(_warmup_models)
+            logger.info("模型预热完成，耗时 %.1f 秒", time.time() - t0)
+        except Exception:
+            logger.exception("模型预热失败（服务继续启动，首个请求会现场加载）")
     yield
     #第③步新增：关闭时释放数据库连接池，否则 uvicorn 退出会有残留连接警告
     from app.db.engine import engine

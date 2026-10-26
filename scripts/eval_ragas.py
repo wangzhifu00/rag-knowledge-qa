@@ -5,8 +5,8 @@
 
   faithfulness       忠实度：答案是否都有检索材料支撑（反幻觉，最关键）
   answer_relevancy   切题度：答案是否对准了问题
-  context_precision  检索精度：检回来的材料里，有用的排得靠不靠前
-  context_recall     检索召回：该有的材料都检回来了吗
+  context_precision  检索精度：该排前的材料排得靠不靠前
+  context_recall     检索召回：该有的材料都进上下文了吗
 
 设计：
   - 只评 8 道有答案的题。应拒答题没有参考答案，RAGAS 打不了分，
@@ -14,7 +14,13 @@
   - 答案不是人写的，是系统真实生成的（generate_answer），检索也走
     真实链路——评的就是线上行为本身
   - vector / hybrid 两种模式各跑一遍，对比哪个配置答案质量更高
-  - 裁判 LLM 和评估用向量化都用 .env 里配的 DashScope（qwen）
+  - 裁判 LLM 和评估用向量化都用 .env 里配的供应商（OpenAI 兼容协议）
+
+用 ragas 0.4 的新式指标 API（ragas.metrics.collections）：
+  - 指标是"实例"不是"单例"，裁判 LLM/embedding 在构造时注入
+  - 底层用 instructor 结构化输出，不再有 ragas.metrics 旧单例的
+    DeprecationWarning，也不依赖 langchain_community（坑12 的根源）
+  - 每个指标收的字段不同（见 METRIC_FIELDS），已逐个实测确认
 
 用法（项目根目录）：
     python scripts/eval_ragas.py
@@ -23,6 +29,7 @@
 qwen-plus 计费下大约几毛钱，跑一次几分钟。
 """
 
+import asyncio
 import sys
 import time
 from pathlib import Path
@@ -36,10 +43,6 @@ from rag.hybrid import hybrid_search, warmup_jieba
 from rag.retriever import best_vector_score, get_client, search
 
 settings = get_settings()
-
-# 评估用的 embedding 模型（DashScope 兼容接口提供的向量化服务）
-# 切题度指标需要把答案转向量，用 API 服务省去本地装 torch
-JUDGE_EMBEDDING_MODEL = "text-embedding-v3"
 
 # 8 道有答案题的参考答案（依据文档原文人工提炼，供 RAGAS 对比打分）
 REFERENCE = {
@@ -67,6 +70,14 @@ REFERENCE = {
     "文档切好块之后存到哪":
         "存入 VectorStore（向量数据库），连同 embeddings 一起持久化，"
         "供提问时做相似度检索。",
+}
+
+# 各指标 ascore() 需要的字段（0.4 新 API 逐个实测确认，字段不对直接 TypeError）
+METRIC_FIELDS = {
+    "faithfulness":      ("user_input", "response", "retrieved_contexts"),
+    "answer_relevancy":  ("user_input", "response"),
+    "context_precision": ("user_input", "retrieved_contexts", "reference"),
+    "context_recall":    ("user_input", "retrieved_contexts", "reference"),
 }
 
 
@@ -102,31 +113,51 @@ def collect_records(mode: str) -> tuple[list[dict], list[str]]:
     return records, skipped
 
 
+async def score_mode(records: list[dict], metrics: dict) -> dict[str, list[float]]:
+    """逐题逐指标打分，返回 {指标名: [每题得分]}。
+
+    新式指标要求异步客户端 + await ascore(...)，
+    这里串行 await（不并发），控制裁判调用的节奏。
+    """
+    scores = {name: [] for name in metrics}
+    for record in records:
+        row = {}
+        for name, metric in metrics.items():
+            kwargs = {f: record[f] for f in METRIC_FIELDS[name]}
+            result = await metric.ascore(**kwargs)
+            value = result.value if hasattr(result, "value") else float(result)
+            scores[name].append(value)
+            row[name] = value
+        print("  " + record["user_input"] + "  " +
+              "  ".join(f"{n}={v:.3f}" for n, v in row.items()))
+    return scores
+
+
 def main() -> None:
-    from langchain_openai import ChatOpenAI, OpenAIEmbeddings
-    from ragas import EvaluationDataset, evaluate
-    from ragas.embeddings import LangchainEmbeddingsWrapper
-    from ragas.llms import LangchainLLMWrapper
-    from ragas.metrics import (answer_relevancy, context_precision,
-                               context_recall, faithfulness)
+    from openai import AsyncOpenAI
+    from ragas.embeddings import OpenAIEmbeddings as RagasOpenAIEmbeddings
+    from ragas.llms import llm_factory
+    from ragas.metrics.collections import (AnswerRelevancy, ContextPrecision,
+                                           ContextRecall, Faithfulness)
 
-    # 裁判 LLM：就是业务用的 qwen（OpenAI 兼容协议，换 base_url 即可）
-    judge_llm = LangchainLLMWrapper(ChatOpenAI(
-        model=settings.llm_model,
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
-        temperature=0,  # 裁判要稳，温度归零
-    ))
-    # 切题度指标需要向量化答案：用 DashScope 的 embedding 服务
-    judge_embeddings = LangchainEmbeddingsWrapper(OpenAIEmbeddings(
-        model=JUDGE_EMBEDDING_MODEL,
-        api_key=settings.llm_api_key,
-        base_url=settings.llm_base_url,
-        # 非官方 OpenAI 端点必须关掉本地的 token 截断逻辑
-        check_embedding_ctx_length=False,
-    ))
+    # 裁判 LLM：就是业务用的那家（OpenAI 兼容协议，换 base_url 即可）
+    # 注意必须给 AsyncOpenAI——新式指标的 ascore 走异步通道，
+    # 传同步客户端会报 "Cannot use agenerate() with a synchronous client"
+    aclient = AsyncOpenAI(api_key=settings.llm_api_key,
+                          base_url=settings.llm_base_url)
+    judge_llm = llm_factory(model=settings.llm_model, provider="openai",
+                            client=aclient)
+    # 切题度指标需要向量化答案，用同一家 embedding 服务
+    judge_embeddings = RagasOpenAIEmbeddings(client=aclient,
+                                             model="text-embedding-v3")
 
-    metrics = [faithfulness, answer_relevancy, context_precision, context_recall]
+    metrics = {
+        "faithfulness": Faithfulness(llm=judge_llm),
+        "answer_relevancy": AnswerRelevancy(llm=judge_llm,
+                                            embeddings=judge_embeddings),
+        "context_precision": ContextPrecision(llm=judge_llm),
+        "context_recall": ContextRecall(llm=judge_llm),
+    }
     warmup_jieba()
 
     results = {}
@@ -141,27 +172,18 @@ def main() -> None:
 
         print(f"===== [{mode}] RAGAS 打分中（裁判LLM多次调用，耐心等）=====")
         t0 = time.time()
-        result = evaluate(
-            EvaluationDataset.from_list(records),
-            metrics=metrics,
-            llm=judge_llm,
-            embeddings=judge_embeddings,
-        )
-        df = result.to_pandas()
-        results[mode] = df
-        print(f"  ({time.time() - t0:.0f}s)\n")
-        cols = ["user_input", "faithfulness", "answer_relevancy",
-                "context_precision", "context_recall"]
-        print(df[cols].round(3).to_string(index=False))
+        results[mode] = asyncio.run(score_mode(records, metrics))
+        print(f"  ({time.time() - t0:.0f}s)")
 
     # 汇总对比：两个模式各指标的平均分
     print("\n" + "=" * 62)
     print(f"{'指标':<20}{'纯向量':>10}{'混合(RRF)':>12}")
     print("-" * 62)
-    for m in ("faithfulness", "answer_relevancy",
-              "context_precision", "context_recall"):
-        v = results["vector"][m].mean() if "vector" in results else float("nan")
-        h = results["hybrid"][m].mean() if "hybrid" in results else float("nan")
+    for m in METRIC_FIELDS:
+        v = (sum(results["vector"][m]) / len(results["vector"][m])
+             if "vector" in results else float("nan"))
+        h = (sum(results["hybrid"][m]) / len(results["hybrid"][m])
+             if "hybrid" in results else float("nan"))
         print(f"{m:<20}{v:>10.3f}{h:>12.3f}")
     print("=" * 62)
     print("解读：faithfulness 最重要（反幻觉）；0.0~1.0，越高越好")
