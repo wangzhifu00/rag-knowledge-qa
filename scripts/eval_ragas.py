@@ -23,12 +23,15 @@
   - 每个指标收的字段不同（见 METRIC_FIELDS），已逐个实测确认
 
 用法（项目根目录）：
-    python scripts/eval_ragas.py
+    python scripts/eval_ragas.py                        # vector + hybrid
+    python scripts/eval_ragas.py --modes hybrid_rerank   # 只跑线上默认模式
+    python scripts/eval_ragas.py --modes vector,hybrid,hybrid_rerank
 
 成本提示：每个指标每题要调若干次裁判 LLM，全量约一两百次调用，
 qwen-plus 计费下大约几毛钱，跑一次几分钟。
 """
 
+import argparse
 import asyncio
 import sys
 import time
@@ -84,10 +87,25 @@ METRIC_FIELDS = {
 
 def retrieve(question: str, mode: str) -> list:
     """走真实检索链路拿 top5（在正式集合 documents_chunks 上）。"""
-    client = get_client()
+    if mode == "hybrid_rerank":
+        # 线上默认模式：混合海选 top20 -> 交叉编码器精排 top5
+        return hybrid_search(question, get_embedder(), top_k=5, rerank=True)
     if mode == "hybrid":
         return hybrid_search(question, get_embedder(), top_k=5)
-    return search(client, get_embedder(), question, top_k=5)
+    return search(get_client(), get_embedder(), question, top_k=5)
+
+
+def refusal_threshold(hits: list, mode: str) -> tuple[float, float, str]:
+    """返回 (判定分数, 门槛, 分数类型)。
+
+    rerank 模式下 hits[].score 已是 0~1 概率，用 rerank_min_score 判；
+    向量/混合模式下 hits[].score 是 RRF 名次分，不能当相似度，
+    必须回落到 vector_score 与 retrieval_min_score（和 chat 接口一致）。
+    """
+    if mode == "hybrid_rerank":
+        top = max((h.score for h in hits), default=0.0)
+        return top, settings.rerank_min_score, "rerank"
+    return best_vector_score(hits), settings.retrieval_min_score, "余弦"
 
 
 def collect_records(mode: str) -> tuple[list[dict], list[str]]:
@@ -99,9 +117,9 @@ def collect_records(mode: str) -> tuple[list[dict], list[str]]:
     records, skipped = [], []
     for q, reference in REFERENCE.items():
         hits = retrieve(q, mode)
-        top1 = best_vector_score(hits)
-        if top1 < settings.retrieval_min_score:
-            skipped.append(f"{q}（top1={top1:.3f} 低于门槛，系统拒答）")
+        top1, threshold, kind = refusal_threshold(hits, mode)
+        if top1 < threshold:
+            skipped.append(f"{q}（{kind} top1={top1:.3f} < 门槛 {threshold}，系统拒答）")
             continue
         answer = generate_answer(q, hits)
         records.append({
@@ -144,6 +162,14 @@ async def score_mode(records: list[dict], metrics: dict) -> dict[str, list[float
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(description="RAGAS 答案质量评估")
+    parser.add_argument(
+        "--modes", default="vector,hybrid",
+        help="要评估的检索模式，逗号分隔：vector / hybrid / hybrid_rerank"
+             "（默认 vector,hybrid；跑线上默认模式加 hybrid_rerank）",
+    )
+    args = parser.parse_args()
+
     from openai import AsyncOpenAI
     from ragas.embeddings import OpenAIEmbeddings as RagasOpenAIEmbeddings
     from ragas.llms import llm_factory
@@ -181,8 +207,15 @@ def main() -> None:
     }
     warmup_jieba()
 
-    results = {}
-    for mode in ("vector", "hybrid"):
+    # 默认只跑 vector / hybrid（各一轮约 6 分钟、几毛钱）。
+    # hybrid_rerank 是线上默认模式，值得单独一轮：--modes hybrid_rerank
+    modes = [m.strip() for m in args.modes.split(",") if m.strip()]
+    unknown = [m for m in modes if m not in ("vector", "hybrid", "hybrid_rerank")]
+    if unknown:
+        raise SystemExit(f"未知模式: {unknown}（可选 vector / hybrid / hybrid_rerank）")
+
+    results, counts = {}, {}
+    for mode in modes:
         print(f"\n===== [{mode}] 生成答案 =====")
         records, skipped = collect_records(mode)
         for s in skipped:
@@ -194,22 +227,34 @@ def main() -> None:
         print(f"===== [{mode}] RAGAS 打分中（裁判LLM多次调用，耐心等）=====")
         t0 = time.time()
         results[mode] = asyncio.run(score_mode(records, metrics))
+        counts[mode] = len(records)
         print(f"  ({time.time() - t0:.0f}s)")
 
-    # 汇总对比：两个模式各指标的平均分（跳过失败条目的 nan）
+    # 汇总对比：各模式各指标的平均分（跳过失败条目的 nan）
     def mean(values: list[float]) -> float:
         valid = [v for v in values if v == v]   # 过滤 nan
         return sum(valid) / len(valid) if valid else float("nan")
 
-    print("\n" + "=" * 62)
-    print(f"{'指标':<20}{'纯向量':>10}{'混合(RRF)':>12}")
-    print("-" * 62)
-    for m in METRIC_FIELDS:
-        v = mean(results["vector"][m]) if "vector" in results else float("nan")
-        h = mean(results["hybrid"][m]) if "hybrid" in results else float("nan")
-        print(f"{m:<20}{v:>10.3f}{h:>12.3f}")
-    print("=" * 62)
+    labels = {"vector": "纯向量", "hybrid": "混合(RRF)", "hybrid_rerank": "混合+精排"}
+    done = [m for m in modes if m in results]
+    if not done:
+        print("没有完成任何模式")
+        return
+
+    name_w = 20
+    col_w = 14
+    print("\n" + "=" * (name_w + col_w * len(done)))
+    print(f"{'指标':<{name_w}}" + "".join(f"{labels[m]:>{col_w}}" for m in done))
+    print("-" * (name_w + col_w * len(done)))
+    for metric in METRIC_FIELDS:
+        line = f"{metric:<{name_w}}"
+        for m in done:
+            line += f"{mean(results[m][metric]):>{col_w}.3f}"
+        print(line)
+    print(f"{'样本数':<{name_w}}" + "".join(f"{counts[m]:>{col_w}}" for m in done))
+    print("=" * (name_w + col_w * len(done)))
     print("解读：faithfulness 最重要（反幻觉）；0.0~1.0，越高越好")
+    print("注意：样本数 <7 说明有题被拒答门槛跳过（跨语言检索没找回来），不是漏算")
 
 
 if __name__ == "__main__":
