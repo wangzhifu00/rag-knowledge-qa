@@ -106,7 +106,7 @@ if (-not (Test-Path ".env")) {
 
 # ---------- 5. 拉镜像 + 启动 ----------
 Write-Step "拉取 Docker 镜像(Postgres + Redis + Qdrant)..."
-docker compose pull
+docker compose -f "docker\docker-compose.yml" pull
 if ($LASTEXITCODE -ne 0) {
   Write-Fail "镜像拉取失败，可能是网络问题。请为 Docker Desktop 配置镜像加速器后重跑脚本"
   Write-Host "参考: 设置 → Docker Engine → registry-mirrors，添加国内镜像地址" -ForegroundColor Yellow
@@ -114,7 +114,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 
 Write-Step "启动所有服务..."
-docker compose up -d
+docker compose -f "docker\docker-compose.yml" up -d
 if ($LASTEXITCODE -ne 0) {
   Write-Fail "docker compose up 启动失败"
   exit 1
@@ -142,9 +142,9 @@ Write-Host "  Adminer (DB UI)     : http://localhost:8080"
 Write-Host "  Qdrant Dashboard    : http://localhost:6333/dashboard"
 Write-Host ""
 Write-Host "常用命令:"
-Write-Host "  停止服务            : docker compose down"
-Write-Host "  查看日志            : docker compose logs -f"
-Write-Host "  重启单个服务        : docker compose restart postgres"
+Write-Host "  停止服务            : docker compose -f docker/docker-compose.yml down"
+Write-Host "  查看日志            : docker compose -f docker/docker-compose.yml logs -f"
+Write-Host "  重启单个服务        : docker compose -f docker/docker-compose.yml restart postgres"
 Write-Host ""
 Write-Host "下一步:接入 LangChain / LlamaIndex,开始构建 RAG 链路"
 Write-Host ""

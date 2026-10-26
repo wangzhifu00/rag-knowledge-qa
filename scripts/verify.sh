@@ -53,10 +53,10 @@ echo "==> 结果: ${PASS} 通过 / ${FAIL} 失败"
 echo ""
 
 if [[ $FAIL -gt 0 ]]; then
-  echo "[HINT] 查看日志: docker compose logs -f <service>"
+  echo "[HINT] 查看日志: docker compose -f docker/docker-compose.yml logs -f <service>"
   echo "       常见问题:"
   echo "       - 端口被占用: 修改 .env 中的 *_PORT"
-  echo "       - 服务未启动: docker compose up -d"
+  echo "       - 服务未启动: docker compose -f docker/docker-compose.yml up -d"
   exit 1
 fi
 

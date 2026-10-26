@@ -61,10 +61,10 @@ Write-Host ""
 Write-Host "==> 结果: $pass 通过 / $fail 失败"
 
 if ($fail -gt 0) {
-  Write-Host "`n[HINT] 查看日志: docker compose logs -f <service>" -ForegroundColor Yellow
+  Write-Host "`n[HINT] 查看日志: docker compose -f docker/docker-compose.yml logs -f <service>" -ForegroundColor Yellow
   Write-Host "       常见问题:" -ForegroundColor Yellow
   Write-Host "       - 端口被占用: 修改 .env 中的 *_PORT" -ForegroundColor Yellow
-  Write-Host "       - 服务未启动: docker compose up -d" -ForegroundColor Yellow
+  Write-Host "       - 服务未启动: docker compose -f docker/docker-compose.yml up -d" -ForegroundColor Yellow
   exit 1
 }
 

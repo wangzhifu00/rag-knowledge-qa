@@ -10,8 +10,8 @@ PROJECT_ROOT="$(dirname "$SCRIPT_DIR")"
 cd "$PROJECT_ROOT"
 
 echo "==> 停止所有服务..."
-docker compose down
+docker compose -f docker/docker-compose.yml down
 
 echo ""
 echo "[DONE] 服务已停止。数据卷已保留,重启后数据不丢失。"
-echo "       如需彻底清理(包括数据): docker compose down -v"
+echo "       如需彻底清理(包括数据): docker compose -f docker/docker-compose.yml down -v"

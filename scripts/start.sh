@@ -25,17 +25,17 @@ if ! command -v docker >/dev/null 2>&1; then
 fi
 
 echo "==> 拉取镜像..."
-docker compose pull
+docker compose -f docker/docker-compose.yml pull
 
 echo "==> 启动服务..."
-docker compose up -d
+docker compose -f docker/docker-compose.yml up -d
 
 echo "==> 等待服务就绪..."
 sleep 5
 
 echo ""
 echo "==> 服务状态:"
-docker compose ps
+docker compose -f docker/docker-compose.yml ps
 
 echo ""
 echo "[DONE] 基础环境已启动。运行 bash scripts/verify.sh 检查连通性"
