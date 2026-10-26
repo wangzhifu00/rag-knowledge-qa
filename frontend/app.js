@@ -254,7 +254,10 @@ async function ask(question) {
   const onEvent = (evt) => {
     if (evt.type === "meta") {
       info = evt;
-      meta.textContent = `检索 ${evt.search_seconds}s · top ${Number(evt.top_score).toFixed(3)} / 门槛 ${evt.threshold}`;
+      // 闲聊/身份类走短路，后端 top_score 是 null——不要显示成 top 0.000
+      meta.textContent = evt.smalltalk
+        ? "闲聊/身份类问题 · 未检索"
+        : `检索 ${evt.search_seconds}s · top ${Number(evt.top_score).toFixed(3)} / 门槛 ${evt.threshold}`;
     } else if (evt.type === "sources") {
       renderSources(evt.sources);
     } else if (evt.type === "token") {
@@ -269,7 +272,9 @@ async function ask(question) {
       if (refused || /无法回答|无法根据现有资料/.test(acc)) bubble.classList.add("refused");
       const e = evt.elapsed || {};
       const total = ((performance.now() - t0) / 1000).toFixed(1);
-      meta.textContent = refused
+      meta.textContent = info?.smalltalk
+        ? `共 ${total}s · 未检索 · 固定话术`
+        : refused
         ? `拒答 · top ${Number(info?.top_score || 0).toFixed(3)} < 门槛 ${info?.threshold} · 未调用模型`
         : `检索 ${e.search_seconds ?? "?"}s · 生成 ${e.generate_seconds ?? "?"}s · 共 ${total}s · 模式 ${info?.mode ?? ""}`;
       scrollToBottom();

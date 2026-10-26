@@ -25,6 +25,7 @@ from app.config import get_settings
 from rag.embedder import get_embedder
 from rag.generator import generate_answer, stream_answer
 from rag.retriever import SearchHit, best_vector_score, get_client, search
+from rag.smalltalk import is_smalltalk, smalltalk_answer
 
 settings = get_settings()
 
@@ -59,6 +60,7 @@ class ChatResponse(BaseModel):
     question: str
     mode: str
     refused: bool = False          # True=触发了检索质量门槛拒答
+    smalltalk: bool = False        # True=闲聊/身份类，未检索
     top_vector_score: float = 0.0  # top1 分数（调试/评估用）
     elapsed: dict
 
@@ -116,6 +118,22 @@ def _to_sources(hits: list[SearchHit]) -> list[SourceOut]:
 @router.post("/chat", response_model=ChatResponse, summary="知识库问答（RAG）")
 def chat(req: ChatRequest) -> ChatResponse:
     t0 = time.time()
+
+    # 闲聊/身份类短路：不检索、不调模型。
+    # 这类问题检索必然命中一堆无关块，右栏来源面板会误导用户
+    # （实测问"你是什么"，返回 5 个 0.588 分的代码片段）；
+    # 而且白跑一次 embedding+rerank。判定见 rag/smalltalk.py。
+    if is_smalltalk(req.question):
+        return ChatResponse(
+            answer=smalltalk_answer(req.question),
+            sources=[],
+            question=req.question,
+            mode=req.mode,
+            smalltalk=True,
+            elapsed={"search_seconds": 0.0, "generate_seconds": 0.0,
+                     "total_seconds": round(time.time() - t0, 2)},
+        )
+
     hits, top_score = _retrieve(req.question, req.top_k, req.mode)
     t_search = time.time() - t0
 
@@ -179,6 +197,23 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
 
     async def event_gen():
         t0 = time.time()
+
+        # 闲聊/身份类短路：顶在最前面，一次正则匹配就分流。
+        # top_score 给 None，前端据此显示"未检索"，不显示 top/门槛。
+        if is_smalltalk(req.question):
+            yield _sse({
+                "type": "meta", "question": req.question, "mode": req.mode,
+                "top_score": None, "threshold": None,
+                "search_seconds": 0.0, "smalltalk": True,
+            })
+            yield _sse({"type": "sources", "sources": []})
+            yield _sse({"type": "token", "text": smalltalk_answer(req.question)})
+            yield _sse({
+                "type": "done", "refused": False, "smalltalk": True,
+                "elapsed": {"search_seconds": 0.0, "generate_seconds": 0.0,
+                            "total_seconds": round(time.time() - t0, 2)},
+            })
+            return
 
         # 检索丢线程池：embedding + reranker 是 CPU 密集的，
         # 直接在事件循环里算会把整条流卡住（这时候别的请求全在排队）。
