@@ -50,9 +50,15 @@ SYSTEM_PROMPT = (
     "6. 当问题是在问你自己（如\"你是谁\"\"你是干什么的\"\"你能做什么\"）：\n"
     "   用一句话说明你是基于本知识库文档的问答助手，然后邀请用户提问；\n"
     "   不要把材料里描述的 agent、角色或人格当成你自己\n"
-    "7. 如果用户的话不是提问而是一句反馈（如\"我不明白\"\"再说清楚点\"），\n"
-    "   说明你没有对话上下文无法判断所指，请用户把问题补充完整，不要假装知道\n"
-    "8. 用简体中文回答，简洁、条理清晰"
+    "7. 如果用户的话不是提问而是一句反馈（如\"我不明白\"\"再说清楚点\"）：\n"
+    "   有【对话历史】时，**禁止反问\"你哪里不明白\"，也不要复述用户的\"我不明白\"**，\n"
+    "   直接从解释开始：挑上一轮里最可能让人困惑的那个点，换一种说法重讲、\n"
+    "   补一个具体例子、拆成更小的步骤，或把抽象描述换成代码/配置示例，\n"
+    "   讲完再问一句\"哪部分还需要展开\"即可\n"
+    "   完全没有历史时，才说明无法判断所指，请用户补充完整\n"
+    "8. 用户的问题可能依赖上一轮（\"它需要哪些依赖\"\"那这个呢\"）：\n"
+    "   结合【对话历史】理解指代，但事实内容仍然只从【参考材料】取\n"
+    "9. 用简体中文回答，简洁、条理清晰"
 )
 
 
@@ -81,27 +87,51 @@ def get_async_llm() -> AsyncOpenAI:
     )
 
 
-def build_prompt(question: str, hits: list[SearchHit]) -> str:
+def _format_history(history: list[dict] | None, max_turns: int = 3,
+                    clip: int = 300) -> str:
+    """对话历史压成文本块。只取最近几轮、助手回复截断——
+    生成要的是"上一轮说了什么"，不是全文复读（还省 token）。"""
+    if not history:
+        return ""
+    recent = history[-max_turns * 2:]
+    lines = []
+    for msg in recent:
+        role = "用户" if msg.get("role") == "user" else "助手"
+        content = (msg.get("content") or "").strip().replace("\n", " ")
+        if len(content) > clip:
+            content = content[:clip] + "…"
+        lines.append(f"{role}: {content}")
+    return "\n".join(lines)
+
+
+def build_prompt(question: str, hits: list[SearchHit],
+                 history: list[dict] | None = None) -> str:
     """把 top_k 块原文编号拼进 Prompt，模型引用时说 [编号] 即可。
 
     同时告诉模型"这个知识库讲的是什么"——这是区分两种"答不了"的依据：
       · 话题属于本库但材料没写  → 拒答（不能用常识替代内部资料）
       · 话题根本不属于本库      → 可以用自己的通用知识回答（并标明来源）
     不告诉它主题，模型就分不清这两种情况，只能一律拒答。
+
+    history 非空时插入【对话历史】：让"它需要哪些依赖""我不明白"这类追问
+    有上下文可依。注意历史只用于理解指代，事实仍然只从材料取。
     """
     blocks = []
     for i, hit in enumerate(hits, start=1):
         pages = "、".join(f"第{p}页" for p in hit.page_numbers) or "未知页"
         blocks.append(f"[{i}] 来源：{hit.filename}（{pages}）\n{hit.text}")
     context = "\n\n".join(blocks) or "（本次检索没有命中任何材料）"
-    return (
-        f"【本知识库主题】\n{settings.kb_description}\n\n"
-        f"【参考材料】\n{context}\n\n"
-        f"【问题】\n{question}"
-    )
+    parts = [f"【本知识库主题】\n{settings.kb_description}"]
+    history_text = _format_history(history)
+    if history_text:
+        parts.append(f"【对话历史】\n{history_text}")
+    parts.append(f"【参考材料】\n{context}")
+    parts.append(f"【问题】\n{question}")
+    return "\n\n".join(parts)
 
 
-def generate_answer(question: str, hits: list[SearchHit]) -> str:
+def generate_answer(question: str, hits: list[SearchHit],
+                    history: list[dict] | None = None) -> str:
     """调 LLM 生成回答。
 
     hits 为空不再直接返回固定拒答话术：材料为空有两种可能——
@@ -113,14 +143,15 @@ def generate_answer(question: str, hits: list[SearchHit]) -> str:
         model=settings.llm_model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_prompt(question, hits)},
+            {"role": "user", "content": build_prompt(question, hits, history)},
         ],
         temperature=0.1,  # 知识库问答要"稳"，温度调低减少发挥
     )
     return resp.choices[0].message.content or ""
 
 
-async def stream_answer(question: str, hits: list[SearchHit]):
+async def stream_answer(question: str, hits: list[SearchHit],
+                        history: list[dict] | None = None):
     """流式版生成：一段一段吐字，网页那边看起来才像"在说话"。
 
     和 generate_answer 的区别只有两处：
@@ -136,7 +167,7 @@ async def stream_answer(question: str, hits: list[SearchHit]):
         model=settings.llm_model,
         messages=[
             {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": build_prompt(question, hits)},
+            {"role": "user", "content": build_prompt(question, hits, history)},
         ],
         temperature=0.1,
         stream=True,

@@ -44,6 +44,10 @@ const WELCOME_HTML = els.messages.innerHTML;
 
 let busy = false;          // 一次只允许一个请求在跑
 let sources = [];          // 当前回答对应的来源，供引用点击查
+// 多轮对话历史：只存最近 3 轮（6 条）。后端据此做指代消解（"它需要哪些依赖"）
+// 并在生成时提供上下文。存太多只会拖慢请求、稀释检索语义。
+const HISTORY_MAX = 6;
+let history = [];
 
 /* ────────────────────────────── 工具 ────────────────────────────── */
 
@@ -281,6 +285,14 @@ async function ask(question) {
         : refused
         ? `拒答 · 模型判定材料不足（top ${Number(info?.top_score || 0).toFixed(3)} / 门槛 ${info?.threshold}）`
         : `检索 ${e.search_seconds ?? "?"}s · 生成 ${e.generate_seconds ?? "?"}s · 共 ${total}s · 模式 ${info?.mode ?? ""}`;
+      // 追问被改写过时补一行，方便判断改写是否正确（透明性）
+      if (info?.rewritten_query) {
+        meta.textContent += ` · 改写「${info.rewritten_query}」`;
+      }
+      // 记入历史：追问的指代消解全靠它。拒答/通用回答也记，模型需要知道聊过什么
+      history.push({ role: "user", content: question });
+      history.push({ role: "assistant", content: acc });
+      if (history.length > HISTORY_MAX) history = history.slice(-HISTORY_MAX);
       scrollToBottom();
     } else if (evt.type === "error") {
       failed = true;
@@ -294,7 +306,13 @@ async function ask(question) {
     const resp = await fetch("/chat/stream", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ question, mode: els.mode.value, top_k: 5 }),
+      body: JSON.stringify({
+        question,
+        mode: els.mode.value,
+        top_k: 5,
+        // 历史在提问那一刻的快照（不含本轮），后端用它做改写与上下文
+        history,
+      }),
     });
 
     if (!resp.ok || !resp.body) {
@@ -471,6 +489,7 @@ els.clearBtn.addEventListener("click", () => {
   renderSources([]);
   els.sourceList.innerHTML =
     '<p class="empty">提问后这里显示命中的原文片段，回答里的 [1][2] 可以点。</p>';
+  history = [];   // 清屏 = 忘掉上下文，否则下一问会莫名接着上一轮
 });
 
 els.file.addEventListener("change", async () => {

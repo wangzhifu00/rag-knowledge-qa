@@ -25,6 +25,7 @@ from app.config import get_settings
 from rag.embedder import get_embedder
 from rag.generator import generate_answer, stream_answer
 from rag.retriever import SearchHit, best_vector_score, get_client, search
+from rag.rewriter import rewrite_query
 from rag.smalltalk import is_smalltalk, smalltalk_answer
 
 settings = get_settings()
@@ -35,6 +36,12 @@ router = APIRouter(tags=["chat"])
 REFUSAL_ANSWER = "知识库中未找到与该问题足够相关的内容，无法根据现有资料回答。"
 
 
+class Turn(BaseModel):
+    """一轮历史消息。只收 user / assistant，system 由后端控制。"""
+    role: str = Field(pattern="^(user|assistant)$")
+    content: str = Field(max_length=4000)
+
+
 class ChatRequest(BaseModel):
     question: str = Field(min_length=1, max_length=500, description="用户问题")
     top_k: int = Field(default=5, ge=1, le=20, description="检索条数")
@@ -43,6 +50,10 @@ class ChatRequest(BaseModel):
         pattern="^(vector|hybrid|hybrid_rerank)$",
         description="检索模式：vector=纯向量, hybrid=向量+BM25+RRF, "
                     "hybrid_rerank=再加交叉编码器精排(多花1~2秒)",
+    )
+    history: list[Turn] = Field(
+        default_factory=list, max_length=20,
+        description="最近几轮对话（user/assistant 交替），用于追问的指代消解",
     )
 
 
@@ -62,6 +73,7 @@ class ChatResponse(BaseModel):
     refused: bool = False          # True=模型按 prompt 判定材料不足（以固定开头识别）
     smalltalk: bool = False        # True=闲聊/身份类，未检索
     below_threshold: bool = False  # True=检索分低于门槛，材料已丢弃（可能是通用问题）
+    rewritten_query: str | None = None  # 追问被改写后的检索用问句（未改写为 None）
     top_vector_score: float = 0.0  # top1 分数（调试/评估用）
     elapsed: dict
 
@@ -135,8 +147,14 @@ def chat(req: ChatRequest) -> ChatResponse:
                      "total_seconds": round(time.time() - t0, 2)},
         )
 
-    hits, top_score = _retrieve(req.question, req.top_k, req.mode)
-    t_search = time.time() - t0
+    # 多轮：先改写再检索。追问（"它需要哪些依赖"）单独拿去检索是检不准的，
+    # 改写把指代消解成独立问句；生成时仍然用原问题和历史，保持口气自然。
+    history = [t.model_dump() for t in req.history]
+    query = rewrite_query(req.question, history)
+    t_rewrite = time.time() - t0
+
+    hits, top_score = _retrieve(query, req.top_k, req.mode)
+    t_search = time.time() - t0 - t_rewrite
 
     # 分数低于门槛：把命中结果丢掉（低分块全是噪声，喂给模型只会干扰），
     # 但**不再直接返回拒答**——材料为空有两种可能：
@@ -148,7 +166,7 @@ def chat(req: ChatRequest) -> ChatResponse:
         hits = []
 
     t1 = time.time()
-    answer = generate_answer(req.question, hits) or REFUSAL_ANSWER
+    answer = generate_answer(req.question, hits, history) or REFUSAL_ANSWER
     t_generate = time.time() - t1
 
     # 拒答由模型自己决定（按 prompt 的固定开头判断），后端只做识别
@@ -161,8 +179,10 @@ def chat(req: ChatRequest) -> ChatResponse:
         mode=req.mode,
         refused=refused,
         below_threshold=below_threshold,
+        rewritten_query=query if query != req.question else None,
         top_vector_score=round(top_score, 4),
         elapsed={
+            "rewrite_seconds": round(t_rewrite, 2),
             "search_seconds": round(t_search, 2),
             "generate_seconds": round(t_generate, 2),
             "total_seconds": round(time.time() - t0, 2),
@@ -213,17 +233,26 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
             })
             return
 
+        # 多轮：先把追问改写成独立问句，再检索。
+        # 改写也是阻塞的 LLM 调用，同样丢线程池。
+        history = [t.model_dump() for t in req.history]
+        try:
+            query = await asyncio.to_thread(rewrite_query, req.question, history)
+        except Exception:  # noqa: BLE001 - 改写是增强项，失败就用原句
+            query = req.question
+        t_rewrite = time.time() - t0
+
         # 检索丢线程池：embedding + reranker 是 CPU 密集的，
         # 直接在事件循环里算会把整条流卡住（这时候别的请求全在排队）。
         try:
             hits, top_score = await asyncio.to_thread(
-                _retrieve, req.question, req.top_k, req.mode
+                _retrieve, query, req.top_k, req.mode
             )
         except Exception as exc:  # noqa: BLE001
             yield _sse({"type": "error", "message": f"检索失败：{exc}"})
             return
 
-        t_search = time.time() - t0
+        t_search = time.time() - t0 - t_rewrite
         threshold = _refusal_threshold(req.mode)
         # 低分时丢弃命中块（全是噪声），但继续调模型——由 prompt 判断
         # 是"库里有主题没内容"（拒答）还是"根本不属于知识库"（通用知识回答）
@@ -238,6 +267,9 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
             "top_score": round(top_score, 4),
             "threshold": threshold,
             "search_seconds": round(t_search, 2),
+            "rewrite_seconds": round(t_rewrite, 2),
+            # 追问被改写时回传给前端显示，方便判断改写对不对
+            "rewritten_query": query if query != req.question else None,
             "below_threshold": below,
         })
 
@@ -249,7 +281,7 @@ async def chat_stream(req: ChatRequest) -> StreamingResponse:
         t1 = time.time()
         acc: list[str] = []
         try:
-            async for piece in stream_answer(req.question, hits):
+            async for piece in stream_answer(req.question, hits, history):
                 acc.append(piece)
                 yield _sse({"type": "token", "text": piece})
         except Exception as exc:  # noqa: BLE001
