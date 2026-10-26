@@ -3,35 +3,118 @@
 为什么向量化：计算机没法直接比"哪段话意思接近"，但能比数字。
 意思相近的文本，向量在空间里就挨得近——这是检索的数学基础。
 
-当前用 fastembed + BAAI/bge-small-zh-v1.5（本地 CPU，ONNX，无 torch）：
-免费、快、文档不出门。路线定的 BGE-M3 等链路通了再换，做对比实验。
+两条后端，按模型名自动选：
+  fastembed（默认）   BAAI/bge-small-zh-v1.5，ONNX 推理，不依赖 torch，
+                      512 维，CPU 上几十毫秒/块。代价：中文模型，跨语言弱。
+  sentence-transformers  BAAI/bge-m3，1024 维，多语言（中/英/日…同一空间），
+                      模型 2.3GB，跑起来慢，但中文提问 × 英文语料这种场景
+                      是它的主场（bge-small 实测做不到：中文"智能体"和
+                      英文 "agent" 在它的空间里离得远）。
+
+为什么要有两条而不是统一一条：fastembed 的 ONNX 导出清单里没有 BGE-M3
+（它是 568M 参数的多语言模型，ONNX 化收益不明显）。反过来只用 torch 会让
+开发机每次冷启动多等十几秒，而大部分调试根本用不上大模型。
+
+本地目录优先：models/bge-m3/ 存在就直接加载（ModelScope 下载的），
+不存在才按模型名在线拉——HF 的 CDN 在国内经常连不上（踩过）。
 """
 
 from functools import lru_cache
+from pathlib import Path
 
-from fastembed import TextEmbedding
+from app.config import get_settings
 
-# 模型名集中放这，以后换 BGE-M3 只改这一处
-MODEL_NAME = "BAAI/bge-small-zh-v1.5"
+# 本地模型根目录（ModelScope 下载的位置，和 reranker 保持一致）
+MODELS_DIR = Path(__file__).resolve().parents[1] / "models"
+
+# 换模型改 app/config.py 的 embedding_model_name（或 reindex --model 临时覆盖）
+DEFAULT_MODEL = "BAAI/bge-small-zh-v1.5"
+
+# 这些模型 fastembed 没有 ONNX 版，必须走 sentence-transformers
+_ST_ONLY_KEYWORDS = ("bge-m3", "bge-large", "multilingual-e5", "gte-large")
+
+
+def _guess_backend(model_name: str) -> str:
+    """按模型名猜后端（bge-m3 → st，其余 → fastembed）。"""
+    return "st" if any(k in model_name.lower() for k in _ST_ONLY_KEYWORDS) else "fastembed"
+
+
+def _local_dir(model_name: str) -> Path | None:
+    """本地有没有这份模型（models/<短名>/）。有就优先用，省得联网。"""
+    path = MODELS_DIR / model_name.split("/")[-1]
+    return path if path.exists() else None
 
 
 class Embedder:
-    """封装 fastembed。首次使用会下载模型（~100MB，一次性，之后走本地缓存）。"""
+    """封装两种后端，对外只暴露 embed_documents / embed_query / dim / model_name。"""
 
-    def __init__(self, model_name: str = MODEL_NAME):
-        self.model_name = model_name
-        self._model = TextEmbedding(model_name=model_name)
-        # 用一条样本探测维度，不同模型维度不同（bge-small-zh-v1.5=512）
-        sample = next(self._model.embed(["维度探测"]))
-        self.dim = len(sample)
+    def __init__(self, model_name: str | None = None, backend: str | None = None):
+        settings = get_settings()
+        self.model_name = model_name or settings.embedding_model_name
+        self.backend = backend or _guess_backend(self.model_name)
+        self.local_dir = _local_dir(self.model_name)
 
-    def embed_documents(self, texts: list[str]) -> list[list[float]]:
-        """批量向量化（入库用）。fastembed 内部有批处理，一次传完最快。"""
+        if self.backend == "st":
+            self._init_st()
+        else:
+            self._init_fastembed()
+
+        # 用一条样本探测维度，不同模型维度不同（bge-small=512，bge-m3=1024）
+        self.dim = len(self.embed_query("维度探测"))
+
+    # ---------- fastembed 后端 ----------
+    def _init_fastembed(self) -> None:
+        from fastembed import TextEmbedding
+
+        self._model = TextEmbedding(model_name=self.model_name)
+
+    def _embed_fastembed(self, texts: list[str]) -> list[list[float]]:
         return [v.tolist() for v in self._model.embed(texts)]
+
+    # ---------- sentence-transformers 后端 ----------
+    def _init_st(self) -> None:
+        from sentence_transformers import SentenceTransformer
+
+        source = str(self.local_dir) if self.local_dir else self.model_name
+        self._model = SentenceTransformer(source, device=self._pick_device())
+
+    @staticmethod
+    def _pick_device() -> str:
+        """有 GPU 就用：BGE-M3 在 3050 Ti 上比 CPU 快 10 倍以上。
+
+        4GB 显存放 2.3GB 的 fp32 模型是紧的，但 batch_size 控制住就够
+        （embeddings 没有 rerank 那种成对输入，占用小得多）。
+        """
+        try:
+            import torch
+            return "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
+            return "cpu"
+
+    def _embed_st(self, texts: list[str]) -> list[list[float]]:
+        # normalize_embeddings：Qdrant 建集合用的是 COSINE，
+        # 归一化后内积就等于余弦相似度，分数口径统一在 0~1
+        vectors = self._model.encode(
+            texts,
+            batch_size=8,
+            normalize_embeddings=True,
+            convert_to_numpy=True,
+            show_progress_bar=len(texts) > 64,   # 大批量给个进度条，小批量不吵
+        )
+        return vectors.tolist()
+
+    # ---------- 对外接口 ----------
+    def embed_documents(self, texts: list[str]) -> list[list[float]]:
+        """批量向量化（入库用）。"""
+        if not texts:
+            return []
+        if self.backend == "st":
+            return self._embed_st(texts)
+        return self._embed_fastembed(texts)
 
     def embed_query(self, text: str) -> list[float]:
         """单条向量化（提问用）。"""
-        return next(self._model.embed([text])).tolist()
+        return self.embed_documents([text])[0]
 
 
 @lru_cache

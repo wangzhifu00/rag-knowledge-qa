@@ -39,7 +39,7 @@ from qdrant_client import QdrantClient, models
 from app.config import get_settings
 from rag.chunker import chunk_pages
 from rag.cleaner import clean_pages
-from rag.embedder import get_embedder
+from rag.embedder import Embedder, get_embedder
 from rag.hybrid import hybrid_search, warmup_jieba
 from rag.parser import parse_pdf
 from rag.retriever import best_vector_score, get_client, search
@@ -206,6 +206,8 @@ def main() -> None:
     ap.add_argument("--testset", default="auto",
                     help="auto=有 eval/golden_set.json 就用(默认)；"
                          "legacy=内置 10 题；也可直接给 json 路径")
+    ap.add_argument("--embedding", default=None,
+                    help="覆盖 embedding 模型（换模型对比实验用，如 BAAI/bge-m3）")
     args = ap.parse_args()
 
     global TESTSET, TESTSET_SOURCE
@@ -213,12 +215,14 @@ def main() -> None:
 
     settings = get_settings()
     client = get_client()
-    embedder = get_embedder()
+    # 换模型对比时用独立实例，不能走 get_embedder() 的单例缓存
+    embedder = Embedder(model_name=args.embedding) if args.embedding else get_embedder()
     warmup_jieba()
 
     n = build_index(client, embedder, args.chunk_size, args.overlap, args.clean)
     label = "清洗" if args.clean else "不清洗"
     print(f"\n题集：{TESTSET_SOURCE}")
+    print(f"模型：{embedder.model_name}（{embedder.dim} 维，{embedder.backend} 后端）")
     print(f"索引：{label} chunk={args.chunk_size}/{args.overlap} → {n} 块 | "
           f"门槛: 向量{settings.retrieval_min_score} "
           f"/ rerank{settings.rerank_min_score}\n")

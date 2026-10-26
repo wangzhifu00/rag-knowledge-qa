@@ -43,6 +43,15 @@ class Settings(BaseSettings):
     openai_base_url: str = "https://api.openai.com/v1"
     openai_model: str = "gpt-4o-mini"
 
+    # ---------- Embedding 模型 ----------
+    # 默认 bge-small-zh-v1.5：fastembed/ONNX，512 维，无 torch 依赖，CPU 上几十毫秒/块。
+    # 换成多语言大模型（如 BAAI/bge-m3，1024 维）时改这里，然后跑 scripts/reindex.py
+    # 重算向量——原文在 PG 里不动，所以换模型前后的效果对比是干净的。
+    # 注意：字段名故意不叫 embedding_model —— .env 里那个 EMBEDDING_MODEL
+    # 是早期 OpenAI embedding 方案留下的死配置（text-embedding-3-small），
+    # 沿用同名会被它悄悄覆盖掉。
+    embedding_model_name: str = "BAAI/bge-small-zh-v1.5"
+
     # ---------- 应用 ----------
     app_port: int = 8000
     log_level: str = "INFO"
