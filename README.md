@@ -70,7 +70,16 @@ flowchart LR
 
 ## 评估
 
-评估集：10 题 golden set（7 题有标准答案 + 3 题应拒答），切分参数 300/30。
+评估集：golden set（有标准答案的题 + 应拒答题），切分参数 300/30。
+
+**题集怎么来的**：`scripts/gen_evalset.py` 让 LLM 只看着单个 chunk 出题
+（手写题会不自觉"照着答案出题"，题干和材料高度重合，检索必中，分数虚高），
+再用本地向量检索做一遍免费质检（top1 分 + 是否命中标注页），
+人工按质检列筛过后 `--finalize` 固化成 `eval/golden_set.json`。
+两个评估脚本都默认读这个文件，所以换题集不用改命令。
+
+> 出题时混用了两种风格：一半题不提术语名（考语义检索），一半题直接点名
+> 类名/函数名（考关键词检索）。只用一种会让某一检索路占便宜。
 
 > 标注复核（2026-10-26）：原「DeepAgents是什么」标为有答案，复核语料后发现全文
 > 只有 URL 路径、代码与导航链接，没有一句定义，已改判为**应拒答**。
@@ -78,6 +87,8 @@ flowchart LR
 > 尺子变严，反而先纠正了尺子自己。
 
 ### 第一层：检索命中率（scripts/eval_retrieval.py，免费秒出）
+
+下面这组数字是 **10 题手写基线**（`--testset legacy` 可复现），保留下来做历史对比：
 
 | 指标 | 纯向量 | 混合(RRF) | 混合+精排 |
 |------|:-----:|:---------:|:---------:|
@@ -177,7 +188,12 @@ uvicorn app.main:app --reload --port 8000
 ### 5. 复现评估（可选）
 
 ```bash
-python scripts/eval_retrieval.py            # 三种检索模式对比
+# 重建题集（可选）：LLM 出题 → 人工筛 eval/evalset_candidates.csv → 固化
+python scripts/gen_evalset.py               # 生成候选（约 40 道，几分钱）
+python scripts/gen_evalset.py --finalize    # 筛完转成 eval/golden_set.json
+
+python scripts/eval_retrieval.py            # 三种检索模式对比（自动用 golden_set.json）
+python scripts/eval_retrieval.py --testset legacy   # 用早期 10 题基线
 python scripts/eval_ragas.py                # RAGAS 答案质量(会消耗 LLM API)
 ```
 
@@ -243,7 +259,9 @@ python scripts/eval_ragas.py                # RAGAS 答案质量(会消耗 LLM A
       混合检索在跨语言语料上 context_recall 1.000→0.722，BM25 反而挤掉了正确块）
 - [ ] 多文档隔离：无关文档会挤占 top5（实测塞进一份简历后，某题 recall 直接归零），
       需要按知识库/文档做过滤或分集合检索
-- [ ] 评估集扩充：10 题只能验证方向，30~100 题才能得到稳定结论
+- [x] 评估集扩充：`gen_evalset.py` 让 LLM 只看着单个 chunk 出题（手写题会"照着答案出题"，
+      检索必中、分数虚高），本地向量检索免费质检，人工筛后固化 `eval/golden_set.json`；
+      两个评估脚本统一读它，换题集不用改命令
 - [ ] 拒答门槛仍靠经验值：正负例分数区间重叠（负例最高 0.661 > 正例最低 0.438），
       分数只做粗筛，真正判定靠 prompt；若要量化拒答质量，需要单独的拒答评估集
 - [ ] 通用知识回答没有评估：标注了「以下不属于知识库内容」，但没有指标衡量
@@ -271,9 +289,11 @@ rag-knowledge-qa/
 │   ├── retriever.py          # Qdrant 向量检索
 │   ├── hybrid.py             # BM25 + RRF 融合
 │   ├── reranker.py           # 交叉编码器精排(bge-reranker-v2-m3)
+│   ├── rewriter.py           # 多轮查询改写(指代消解)
+│   ├── smalltalk.py          # 闲聊/身份类短路(不检索直接答)
 │   └── generator.py          # Prompt 组装 + 同步/流式生成
 ├── frontend/                 # 原生单页界面(index.html/style.css/app.js)
-├── scripts/                  # ingest / eval_retrieval / eval_ragas / ask
+├── scripts/                  # ingest / gen_evalset / eval_* / ask / drop_document
 ├── docker/docker-compose.yml # PG + Redis + Qdrant + Adminer
 ├── data/                     # 示例文档
 ├── docs/                     # 架构说明 + 界面截图

@@ -1,11 +1,18 @@
-"""检索质量评估：基于人工标注的 golden 集（10 题）。
+"""检索质量评估：基于 golden 集（人工筛过的标注题）。
 
 这是第⑦步的"尺子"——B 阶段的消融实验量的是"余弦分高低"，
 本脚本量的是"该找到的找到没 / 不该编的有没有拒"。
 
+题集从哪来（按优先级）：
+  1. eval/golden_set.json —— 正式题集，由 scripts/gen_evalset.py 生成 + 人工筛
+  2. 本文件内置的 10 题   —— 早期手写版，留作向后兼容的兜底
+  存在 golden_set.json 时自动用它，打印时会写明来源，不用改命令。
+
 用法（项目根目录）：
     python scripts/eval_retrieval.py                          # 三模式对比(默认 300/30，同正式集合)
     python scripts/eval_retrieval.py --mode both              # 只跑 向量 vs 混合
+    python scripts/eval_retrieval.py --testset eval/golden_set.json  # 显式指题集
+    python scripts/eval_retrieval.py --testset legacy         # 强制用内置 10 题
     python scripts/eval_retrieval.py --chunk-size 500 --overlap 50   # 换切分参数复现旧实验
     python scripts/eval_retrieval.py --no-clean               # 不清洗(baseline)
 
@@ -21,6 +28,7 @@
 """
 
 import argparse
+import json
 import sys
 from pathlib import Path
 
@@ -38,11 +46,13 @@ from rag.retriever import best_vector_score, get_client, search
 
 PDF = "data/langchain_intro.pdf"
 EVAL_COLLECTION = "eval_tmp"
+GOLDEN_JSON = Path("eval/golden_set.json")
 
 # golden 标注集：pages=标准答案所在页（命中判定=检索结果的页码与之相交）
 #           pages=None 表示"库里没有答案"，正确行为是被拒答
 # 标注方法：关键词全文定位（2026-10-26 机标，用户已核对）
-TESTSET = [
+# 注：这是早期手写版，只在 eval/golden_set.json 不存在时用（--testset legacy 也可强制）
+LEGACY_TESTSET = [
     {"q": "什么是LangChain",         "pages": None},       # 全文未介绍 LangChain 本身
     {"q": "LangChain提供哪些模块",    "pages": None},       # 无模块列表章节
     {"q": "如何用LangChain做RAG",    "pages": [1]},        # RAG patterns 介绍页
@@ -58,6 +68,32 @@ TESTSET = [
     {"q": "怎么运行RAG agent",       "pages": [16]},       # Run the agent 章节
     {"q": "文档切好块之后存到哪",     "pages": [10, 11]},   # VectorStore 持久化
 ]
+
+# 实际使用的题集（main 里按 --testset 决定），格式统一为
+# {"q": 问题, "pages": 标准页 或 None}；JSON 里多出来的字段这里用不上，忽略
+TESTSET = LEGACY_TESTSET
+TESTSET_SOURCE = "内置 10 题（legacy）"
+
+
+def load_testset(arg: str) -> tuple[list[dict], str]:
+    """按 --testset 载入题集，返回 (题集, 来源说明)。
+
+    默认 auto：有 eval/golden_set.json 就用它，否则退回内置题集。
+    """
+    if arg == "legacy":
+        return LEGACY_TESTSET, "内置 10 题（legacy，手动指定）"
+
+    path = GOLDEN_JSON if arg == "auto" else Path(arg)
+    if not path.exists():
+        if arg == "auto":
+            return LEGACY_TESTSET, "内置 10 题（未找到 eval/golden_set.json）"
+        raise SystemExit(f"题集文件不存在：{path}")
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    items = [{"q": i["q"], "pages": i.get("pages")} for i in data["items"]]
+    n_ans = sum(1 for i in items if i["pages"])
+    return items, (f"{path}｜{len(items)} 题"
+                   f"（{n_ans} 有答案 + {len(items) - n_ans} 应拒答）")
 
 
 def build_index(client: QdrantClient, embedder, chunk_size: int, overlap: int,
@@ -167,7 +203,13 @@ def main() -> None:
                     choices=["vector", "hybrid", "hybrid_rerank", "both", "all"],
                     default="all",
                     help="all=三种模式对比(默认) both=前两种")
+    ap.add_argument("--testset", default="auto",
+                    help="auto=有 eval/golden_set.json 就用(默认)；"
+                         "legacy=内置 10 题；也可直接给 json 路径")
     args = ap.parse_args()
+
+    global TESTSET, TESTSET_SOURCE
+    TESTSET, TESTSET_SOURCE = load_testset(args.testset)
 
     settings = get_settings()
     client = get_client()
@@ -176,8 +218,9 @@ def main() -> None:
 
     n = build_index(client, embedder, args.chunk_size, args.overlap, args.clean)
     label = "清洗" if args.clean else "不清洗"
-    print(f"\n评估集：{label} chunk={args.chunk_size}/{args.overlap} → {n} 块 | "
-          f"10 题（8 有答案 + 2 应拒答）| 门槛: 向量{settings.retrieval_min_score} "
+    print(f"\n题集：{TESTSET_SOURCE}")
+    print(f"索引：{label} chunk={args.chunk_size}/{args.overlap} → {n} 块 | "
+          f"门槛: 向量{settings.retrieval_min_score} "
           f"/ rerank{settings.rerank_min_score}\n")
 
     mode_map = {

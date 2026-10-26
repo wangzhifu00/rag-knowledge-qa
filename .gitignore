@@ -51,3 +51,7 @@ postgres_data/
 redis_data/
 # 本地大模型(reranker等,约1GB+,从ModelScope下载)
 models/
+
+# ----- 评估集 -----
+# golden_set.json 是正式题集(要入库)；候选表是人筛用的中间产物，每次重生成都会覆盖
+eval/evalset_candidates.csv

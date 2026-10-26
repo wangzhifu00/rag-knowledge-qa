@@ -33,6 +33,7 @@ qwen-plus 计费下大约几毛钱，跑一次几分钟。
 
 import argparse
 import asyncio
+import json
 import sys
 import time
 from pathlib import Path
@@ -46,13 +47,15 @@ from rag.hybrid import hybrid_search, warmup_jieba
 from rag.retriever import best_vector_score, get_client, search
 
 settings = get_settings()
+GOLDEN_JSON = Path("eval/golden_set.json")
 
 # 7 道有答案题的参考答案（依据文档原文人工提炼，供 RAGAS 对比打分）
 # 注意：原 8 题里的「DeepAgents是什么」已剔除（2026-10-26）——
 # 复核语料后确认全文没有一句定义 Deep Agents，只有 URL/代码/导航链接，
 # 它属于"只提到名称、没给定义"，正确行为是拒答；
 # 原先的参考答案是我按常识补的，拿它当尺子等于惩罚正确行为
-REFERENCE = {
+# 注：这是早期手写版，只在 eval/golden_set.json 不存在时用（--testset legacy 也可强制）
+LEGACY_REFERENCE = {
     "如何用LangChain做RAG":
         "按教程分两步：先索引文档（加载、切分、向量化、存入向量库），"
         "再构建带检索工具的智能体，回答时先检索相关块再综合生成。",
@@ -75,6 +78,36 @@ REFERENCE = {
         "存入 VectorStore（向量数据库），连同 embeddings 一起持久化，"
         "供提问时做相似度检索。",
 }
+
+# 实际使用的参考答案（main 里按 --testset 决定）
+REFERENCE = LEGACY_REFERENCE
+
+
+def load_references(arg: str) -> tuple[dict[str, str], str]:
+    """从 golden_set.json 取可答题的参考答案，返回 ({问题: 参考答案}, 来源)。
+
+    只收 expect=="answerable" 且 reference 非空的题：
+    应拒答题没有参考答案，RAGAS 打不了分（它们的表现由检索层的拒答正确率覆盖）。
+    """
+    if arg == "legacy":
+        return LEGACY_REFERENCE, f"内置 {len(LEGACY_REFERENCE)} 题（legacy，手动指定）"
+
+    path = GOLDEN_JSON if arg == "auto" else Path(arg)
+    if not path.exists():
+        if arg == "auto":
+            return LEGACY_REFERENCE, f"内置 {len(LEGACY_REFERENCE)} 题（未找到 golden_set.json）"
+        raise SystemExit(f"题集文件不存在：{path}")
+
+    data = json.loads(path.read_text(encoding="utf-8"))
+    refs = {
+        i["q"]: i["reference"]
+        for i in data["items"]
+        if i.get("expect") == "answerable" and i.get("reference")
+    }
+    if not refs:
+        raise SystemExit(f"{path} 里没有可评分题（需要 expect=answerable 且带 reference）")
+    return refs, f"{path}｜{len(refs)} 道可评分题"
+
 
 # 各指标 ascore() 需要的字段（0.4 新 API 逐个实测确认，字段不对直接 TypeError）
 METRIC_FIELDS = {
@@ -168,7 +201,15 @@ def main() -> None:
         help="要评估的检索模式，逗号分隔：vector / hybrid / hybrid_rerank"
              "（默认 vector,hybrid；跑线上默认模式加 hybrid_rerank）",
     )
+    parser.add_argument(
+        "--testset", default="auto",
+        help="auto=有 eval/golden_set.json 就用(默认)；legacy=内置 7 题；"
+             "也可直接给 json 路径",
+    )
     args = parser.parse_args()
+
+    global REFERENCE
+    REFERENCE, ref_source = load_references(args.testset)
 
     from openai import AsyncOpenAI
     from ragas.embeddings import OpenAIEmbeddings as RagasOpenAIEmbeddings
@@ -215,6 +256,7 @@ def main() -> None:
         raise SystemExit(f"未知模式: {unknown}（可选 vector / hybrid / hybrid_rerank）")
 
     results, counts = {}, {}
+    print(f"\n题集：{ref_source}")
     for mode in modes:
         print(f"\n===== [{mode}] 生成答案 =====")
         records, skipped = collect_records(mode)
@@ -254,7 +296,8 @@ def main() -> None:
     print(f"{'样本数':<{name_w}}" + "".join(f"{counts[m]:>{col_w}}" for m in done))
     print("=" * (name_w + col_w * len(done)))
     print("解读：faithfulness 最重要（反幻觉）；0.0~1.0，越高越好")
-    print("注意：样本数 <7 说明有题被拒答门槛跳过（跨语言检索没找回来），不是漏算")
+    n_ref = len(REFERENCE)
+    print(f"注意：样本数 <{n_ref} 说明有题被拒答门槛跳过（跨语言检索没找回来），不是漏算")
 
 
 if __name__ == "__main__":
